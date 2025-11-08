@@ -1,68 +1,271 @@
+/* ================================
+   🌀 Tailwind base import
+================================ */
+@import "tailwindcss";
+
+/* ================================
+   🌐 Global Root
+================================ */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Inter", system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  color: rgba(255, 255, 255, 0.92);
+  background: transparent;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
+/* ================================
+   🪟 Page Layout Reset
+================================ */
+html,
 body {
   margin: 0;
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+  overflow: hidden;
+}
+
+/* Root container: docked-left, with safety margin so glow never leaves screen */
+#root {
+  position: fixed;
+  inset: 0;
   display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  align-items: center;
+  justify-content: flex-start;      /* dock toward left */
+  padding-left: 20px;               /* margin from left edge */
+  padding-right: 20px;              /* margin from right edge (border safety) */
+  background: transparent;
+  overflow: hidden;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
-}
-
+/* ================================
+   🎛️ Buttons
+================================ */
 button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 0.7em 1.3em;
+  font-size: 1rem;
   font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  background-color: rgba(255, 255, 255, 0.05);
+  color: white;
+  backdrop-filter: blur(20px);
+  transition: background-color 0.25s ease-in-out, border-color 0.25s ease-in-out;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
+button:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* ================================
+   ✨ Headings
+================================ */
+h1 {
+  font-size: 3rem;
+  line-height: 1.1;
+  font-weight: 700;
+  background: linear-gradient(90deg, #00ffff, #ff00ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ================================
+   🌈 Glass Components
+================================ */
+.glass-card {
+  position: relative;
+
+  /* 🔒 Fixed “design” size, but never bigger than window - 40px margin */
+  width: min(780px, calc(100vw - 40px));
+  height: min(500px, calc(100vh - 40px));
+
+  flex-shrink: 0;
+  flex-grow: 0;
+
+  background: rgba(25, 30, 50, 0.55);
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(40px) saturate(180%) brightness(110%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%) brightness(110%);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  align-items: stretch;
+  padding: 1.5rem 2rem;
+  overflow: hidden; /* ✅ card never grows with more messages */
+  transition: none !important;
+  box-shadow:
+    0 0 25px rgba(56, 189, 248, 0.35),
+    0 0 45px rgba(232, 121, 249, 0.25),
+    inset 0 0 15px rgba(255, 255, 255, 0.05);
+}
+
+/* If you still add .expanded / .listening from React,
+   keep the same size so it doesn't “snap” bigger/smaller. */
+.glass-card.expanded,
+.glass-card.listening {
+  width: min(780px, calc(100vw - 40px));
+  height: min(500px, calc(100vh - 40px));
+  transition: none !important;
+  transform: none !important;
+}
+
+/* Ambient glowing border */
+.glass-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 28px;
+  padding: 1.5px;
+  background: linear-gradient(
+    130deg,
+    rgba(56, 189, 248, 0.45),
+    rgba(232, 121, 249, 0.4),
+    rgba(56, 189, 248, 0.45)
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: glowSweep 8s linear infinite;
+  pointer-events: none;
+}
+
+/* Light sweep glow */
+@keyframes glowSweep {
+  0% { filter: hue-rotate(0deg); opacity: 0.7; }
+  50% { filter: hue-rotate(180deg); opacity: 1; }
+  100% { filter: hue-rotate(360deg); opacity: 0.7; }
+}
+
+/* ================================
+   💬 Conversation Area (scroll)
+================================ */
+.conversation {
+  flex: 1 1 auto;
+  min-height: 0;           /* important for flexbox scrolling */
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  scroll-behavior: smooth;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Subtle top fade */
+.conversation::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  height: 40px;
+  background: linear-gradient(
+    to bottom,
+    rgba(25, 30, 50, 0.9),
+    rgba(25, 30, 50, 0)
+  );
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* Scrollbar styling */
+.conversation::-webkit-scrollbar {
+  width: 6px;
+}
+.conversation::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 10px;
+}
+.conversation::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* ================================
+   💭 Chat Bubbles
+================================ */
+.message-bubble {
+  max-width: 70%;
+  padding: 1rem 1.25rem;
+  border-radius: 1.5rem;
+  font-size: 1rem;
+  line-height: 1.6;
+  backdrop-filter: blur(25px);
+  margin: 6px 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
+}
+
+.ai-bubble {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f3f3f3;
+  border-radius: 18px 18px 18px 4px;
+  margin-right: auto;
+}
+
+.user-bubble {
+  align-self: flex-end;
+  background: rgba(0, 140, 255, 0.45);
+  border: 1px solid rgba(0, 200, 255, 0.5);
+  color: white;
+  border-radius: 18px 18px 4px 18px;
+  margin-left: auto;
+  box-shadow:
+    0 0 25px rgba(0, 180, 255, 0.25),
+    inset 0 0 2px rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(40px) saturate(180%) brightness(115%);
+}
+
+/* ================================
+   🌟 Glow Animations hook
+================================ */
+@keyframes borderGlow {
+  0% {
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4),
+                0 0 20px rgba(232, 121, 249, 0.3),
+                inset 0 0 10px rgba(56, 189, 248, 0.2);
   }
-  a:hover {
-    color: #747bff;
+  50% {
+    box-shadow: 0 0 25px rgba(56, 189, 248, 0.9),
+                0 0 50px rgba(232, 121, 249, 0.6),
+                inset 0 0 25px rgba(56, 189, 248, 0.4);
   }
-  button {
-    background-color: #f9f9f9;
+  100% {
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.4),
+                0 0 20px rgba(232, 121, 249, 0.3),
+                inset 0 0 10px rgba(56, 189, 248, 0.2);
+  }
+}
+
+.animate-borderGlow {
+  animation: borderGlow 3s ease-in-out infinite;
+  border-radius: 28px;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+}
+
+/* ================================
+   📱 Responsive tweak
+================================ */
+@media (max-width: 900px) {
+  #root {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .glass-card {
+    padding: 1rem;
+  }
+
+  .message-bubble {
+    font-size: 0.9rem;
+    max-width: 90%;
   }
 }
