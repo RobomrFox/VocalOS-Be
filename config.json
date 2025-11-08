@@ -1,0 +1,6 @@
+{
+  "wake_word": "friday",
+  "wake_pause": 0.7,
+  "command_pause": 0.7,
+  "dictation_pause": 1.2
+}
