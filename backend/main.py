@@ -1,7 +1,6 @@
-from flask import Flask, request, jsonify, request
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import speech_recognition as sr
-import numpy as np
 import time
 import google.generativeai as genai
 import os
@@ -12,27 +11,24 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
-import pickle
 from dotenv import load_dotenv
-import librosa 
 
-from resemblyzer import VoiceEncoder, preprocess_wav
+from stt import VoiceSignature
 
-encoder = VoiceEncoder()
+from real_time_stt import AudioToTextRecorder
 
-def get_embedding_from_audio_np(audio_np, sample_rate=16000):
-    # Resemblyzer expects wav float32, typically sample rate 16k
-    # Convert int16 numpy to float32 in range [-1, 1]
-    wav = audio_np.astype(np.float32) / np.iinfo(np.int16).max
-    return encoder.embed_utterance(wav)
 
 
 load_dotenv()
 
-recognizer = sr.Recognizer()
-
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+
+stt = AudioToTextRecorder()
+vs = VoiceSignature()
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
 
 # === Gemini API setup ===
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", "")
@@ -40,32 +36,6 @@ genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 
 recognizer = sr.Recognizer()
-
-#speech recognition setup 
-
-
-def generate_embedding_from_audio_file(file_path):
-    audio_np, _ = librosa.load(file_path, sr=16000)
-    return get_embedding_from_audio_np(audio_np)
-
-enrollment_embedding_path = "enrolled_embedding.pkl"
-enrolled_embedding = None
-
-if os.path.exists(enrollment_embedding_path):
-    # Load existing enrollment embedding from disk
-    with open(enrollment_embedding_path, "rb") as f:
-        enrolled_embedding = pickle.load(f)
-else:
-    # enrollment.wav might not exist if user didn't enroll yet, so check first
-    if os.path.exists("enrollment.wav"):
-        enrolled_embedding = generate_embedding_from_audio_file("enrollment.wav")
-        with open(enrollment_embedding_path, "wb") as f:
-            pickle.dump(enrolled_embedding, f)
-    else:
-        # No enrollment file and no saved embedding found
-        enrolled_embedding = None
-
-
 
 # === Helper functions ===
 
@@ -286,74 +256,50 @@ Context:
         # Final fallback
         return {"action": "none", "reply": text}
 
-# @app.route("/voice-signature", methods=["POST"])
-# def listen_voice():
-#     try:
-#         with sr.Microphone() as source:
-#             recognizer.adjust_for_ambient_noise(source, duration=1)
-#             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-#         user_text = recognizer.recognize_google(audio)
-#         return jsonify({"text": user_text, "reply": f"Received: {user_text}"})
-#     except sr.UnknownValueError:
-#         return jsonify({"error": "Could not understand audio."}), 400
-#     except sr.WaitTimeoutError:
-#         return jsonify({"error": "Listening timed out."}), 408
-#     except sr.RequestError as e:
-#         return jsonify({"error": f"API request failed: {e}"}), 502
-    
-
-def is_speaker(audio_np, reference_embedding, threshold=0.65):
-    test_embedding = get_embedding_from_audio_np(audio_np)
-    similarity = np.dot(reference_embedding, test_embedding) / (
-        np.linalg.norm(reference_embedding) * np.linalg.norm(test_embedding))
-    return similarity > threshold
-
 
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
     try:
-        data = request.form or {}
-        verify_voice = data.get("verify_voice", "true").lower() == "true"  # voice verification toggle
+        verify_voice = False
+        if request.is_json:
+            verify_voice = request.get_json().get("verify_voice", False)
+        else:
+            verify_voice = request.form.get("verify_voice", "false").lower() == "true"
 
-        # Require audio file upload from frontend for voice input
-        audio_file = request.files.get("file")
-        if not audio_file:
-            return jsonify({"error": "No audio file uploaded"}), 400
-
-        temp_path = "temp_audio.wav"
-        audio_file.save(temp_path)
-
-        # Load audio to numpy array at 16kHz for voice embedding comparison
-        audio_np, _ = librosa.load(temp_path, sr=16000)
-
-        # Verify voice embedding similarity if enabled
+        global enrolled_embedding
         if verify_voice:
             if enrolled_embedding is None:
-                os.remove(temp_path)
                 return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
-
-            if not is_speaker(audio_np, enrolled_embedding):
-                os.remove(temp_path)
+            print("🎧 Verifying voice signature...")
+            verified = vs.verify(enrolled_embedding, duration=6)
+            if not verified:
                 return jsonify({"error": "Voice not recognized"}), 403
+        else:
+            print("Voice signature verification skipped (toggle off)")
 
-        # Convert audio to text using SpeechRecognition with Google
-        with sr.AudioFile(temp_path) as source:
-            audio_data = recognizer.record(source)
-            user_text = recognizer.recognize_google(audio_data)
+        print("🧠 Recording and transcribing...")
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
-        os.remove(temp_path)
+        user_text = recognizer.recognize_google(audio)
+        print(f"🗣 You said: {user_text}")
 
-        # Ask Gemini model for action based on recognized user_text
         gemini_decision = ask_gemini_for_action(user_text)
-        if not isinstance(gemini_decision, dict):  # Safe parse fallback
-            try:
-                gemini_decision = json.loads(str(gemini_decision))
-            except Exception:
-                gemini_decision = {"action": "none", "reply": str(gemini_decision)}
+        action = gemini_decision.get("action", "none").lower()
+        target = gemini_decision.get("target", "")
+
+        friendly_replies = {
+            "open_app": f"Opening {target} now.",
+            "open_browser": f"Opening browser to {target}.",
+            "write_text": f"Typing your message in {target}.",
+            "compose_email": "Composing email.",
+            "none": gemini_decision.get("reply", ""),
+        }
 
         reply = gemini_decision.get("reply", "")
-
-        # Implement any required action execution here if needed
+        if not reply.strip():
+            reply = friendly_replies.get(action, "[No reply from AI]")
 
         return jsonify({"text": user_text, "reply": reply})
 
@@ -362,7 +308,7 @@ def listen_voice():
     except sr.WaitTimeoutError:
         return jsonify({"error": "Listening timed out."}), 408
     except sr.RequestError as e:
-        return jsonify({"error": f"API request failed: {e}"}), 502
+        return jsonify({"error": f"API failed: {e}"}), 502
     except Exception:
         print(traceback.format_exc())
         return jsonify({"error": "Internal server error occurred."}), 500
