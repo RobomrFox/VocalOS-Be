@@ -1,5 +1,20 @@
 import sounddevice as sd
 import numpy as np
+# Add at the very top of your recognizer file
+import sys
+import os
+
+# Make sure Python can find Talon based on your repo layout
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "lang")))
+
+from talon import speech_system
+
+def inject_to_talon(recognized_text):
+    speech_system.engine_mimic(recognized_text)
+
+# Wherever you process final STT result:
+inject_to_talon(recognized_text)
+
 
 # List available microphones
 def get_microphones():

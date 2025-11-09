@@ -12,23 +12,19 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
-import sys
-from datetime import datetime  # ✅ for date/time answers
-
-sys.stdout.reconfigure(encoding='utf-8')
-
-# ✅ Load environment variables from .env
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
-print(f"🔍 GOOGLE_API_KEY loaded? {'✅ Yes' if api_key else '❌ No'}")
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
+
+stt = AudioToTextRecorder()
+vs = VoiceSignature()
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
+
 # === Gemini API setup ===
-if not api_key:
-    raise EnvironmentError("❌ Missing GOOGLE_API_KEY in .env file.")
-genai.configure(api_key=api_key)
+os.environ["GOOGLE_API_KEY"] = "AIzaSyBqVYWth6gOopleZ-hDI3in0I_dB_BZFto"
+genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 print("✅ Gemini connected successfully!")
 
@@ -192,94 +188,20 @@ def compose_email(to, subject, body):
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
-# === Built-in quick answers (date/time etc.) ===
-def handle_builtin_question(user_text: str):
-    """Handle very simple questions locally without Gemini (date/time/day)."""
-    text = (user_text or "").strip().lower()
-    if not text:
-        return None
-
-    now = datetime.now()
-
-    # Time questions
-    if any(phrase in text for phrase in ["what time is it", "current time", "time now", "tell me the time"]):
-        return f"It’s {now.strftime('%I:%M %p')}."
-
-    # Date questions
-    if "date" in text or "today" in text:
-        # e.g. "what is the date today", "what's today's date"
-        return f"Today is {now.strftime('%A, %B %d, %Y')}."
-
-    # Day-of-week questions
-    if "what day is it" in text or ("day" in text and "today" in text):
-        return f"Today is {now.strftime('%A')}."
-
-    return None
-
-# === Fallback free-chat with Gemini ===
-def fallback_chat(user_text: str) -> str:
-    """If structured action flow can't help, just talk like a normal AI."""
-    try:
-        prompt = """
-You are VocalAI, a friendly conversational assistant.
-The user already tried a command mode and it wasn't helpful enough.
-Now just answer naturally and helpfully, with NO JSON, only plain text.
-"""
-        resp = model.generate_content(f"{prompt}\nUser: {user_text}")
-        reply = (resp.text or "").strip()
-        return reply or "Sorry, I’m still thinking about how to answer that."
-    except Exception as e:
-        print("❌ Fallback chat error:", e)
-        return "Sorry, something went wrong while trying to answer that."
 
 # === Ask Gemini for actions ===
 def ask_gemini_for_action(user_text):
-    """Ask Gemini to interpret user intent, handle memory-like context, auto-correct speech, and continuously self-correct while generating."""
-    import re
+    """Ask Gemini to interpret the user's intent and return a safe structured action."""
     open_windows = [w.title for w in gw.getAllWindows() if w.title]
     context = f"Currently open windows: {open_windows[:5]}"
 
-    # 🧠 Persistent pseudo-memory (same as before)
-    memory_context = {
-        "known_contacts": ["professor", "John", "Ava", "Mom", "Dad"],
-        "known_hobbies": ["coding", "music", "travel", "photography"],
-        "recent_topics": ["hackathon", "Gemini integration", "VocalAI design"]
-    }
+    # ✅ Escape all curly braces with double braces
+    system_prompt = """
+You are VocalAI, a desktop AI assistant that can perform user commands.
+You can open websites, launch apps, write or append text in programs, or compose emails in Gmail.
 
-    # 🪄 STEP 1: Pre-correct the speech text before reasoning (lightweight + fast)
-    try:
-        correction_prompt = f"""
-        You are a precise language model helping correct speech-to-text output.
-        The user's phrase came from microphone transcription: "{user_text}".
-        Fix any misspellings, missing letters, spacing issues, or duplicated words
-        while keeping the same meaning and tone.
-        Return ONLY the corrected sentence (no explanation, no quotes).
-        """
-        correction = model.generate_content(correction_prompt)
-        corrected_text = (correction.text or "").strip()
-        if corrected_text:
-            print(f"🪄 Auto-corrected speech → {corrected_text}")
-            user_text = corrected_text
-    except Exception as e:
-        print(f"⚠️ Spell correction skipped: {e}")
+Always reply **only in valid JSON** using one of the following structures:
 
-    # === STEP 2: Enhanced reasoning prompt with continuous correction awareness ===
-    system_prompt = f"""
-You are VocalAI — a friendly, proactive AI desktop assistant that listens to speech and acts or replies naturally.
-
-The user's message was transcribed from spoken audio: "{user_text}"
-(which may still include minor misheard or mispronounced words).
-
-Your reasoning and output generation rules:
-1️⃣ As you generate your reasoning and final response, continuously self-correct any remaining
-    speech or transcription errors in real time — do NOT mention corrections.
-2️⃣ Always interpret what the user *meant*, even if the transcript contains partial or broken words.
-3️⃣ Keep your tone natural, concise, and humanlike.
-4️⃣ Return output strictly as JSON — never add Markdown, explanations, or comments outside JSON.
-
-Supported actions (choose ONE main intent per response):
-
-### 🧩 Functional Actions
 - {{ "action": "open_browser", "target": "<url or website name>" }}
 - {{ "action": "open_app", "target": "<local application name>" }}
 - {{ "action": "write_text", "target": "<app name>", "content": "<text to write>" }}
@@ -348,27 +270,41 @@ Known memory:
         # 🧩 Fallback — treat the entire string as natural chat
         return {"action": "none", "reply": text}
 
-    except Exception as e:
-        print("❌ ask_gemini_for_action error:", e)
-        return {"action": "none", "reply": "Sorry, something went wrong while thinking about that."}
-
 
 
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
-    """🎙️ Voice input → Gemini reasoning → perform action safely."""
     try:
+        verify_voice = False
+        if request.is_json:
+            verify_voice = request.get_json().get("verify_voice", False)
+        else:
+            verify_voice = request.form.get("verify_voice", "false").lower() == "true"
+
+        global enrolled_embedding
+        if verify_voice:
+            if enrolled_embedding is None:
+                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
+            print("🎧 Verifying voice signature...")
+            verified = vs.verify(enrolled_embedding, duration=6)
+            if not verified:
+                return jsonify({"error": "Voice not recognized"}), 403
+        else:
+            print("Voice signature verification skipped (toggle off)")
+
+        print("🧠 Recording and transcribing...")
         with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
             recognizer.adjust_for_ambient_noise(source, duration=1)
             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
         print("🧠 Processing your voice...")
 
         try:
+            # 👉 This is the line that was crashing before
             user_text = recognizer.recognize_google(audio)
             print(f"🗣️ You said: {user_text}")
         except sr.UnknownValueError:
+            # Could not understand the audio
             msg = "I couldn't understand what you said. Please try again and speak clearly."
             print("❌ STT UnknownValueError: ", msg)
             return jsonify({
@@ -385,6 +321,7 @@ def listen_voice():
                 "can_retry": True
             }), 408
         except sr.RequestError as e:
+            # Network/API issue with Google STT
             msg = f"Speech recognition service failed: {e}"
             print("🌐 STT RequestError: ", msg)
             return jsonify({
@@ -392,12 +329,6 @@ def listen_voice():
                 "code": "stt_api_error",
                 "can_retry": False
             }), 502
-
-        # 🧩 First, check if we can answer locally (date/time/etc.)
-        builtin = handle_builtin_question(user_text)
-        if builtin:
-            print("⚡ Answered via builtin handler.")
-            return jsonify({"text": user_text, "reply": builtin})
 
         # 🧠 Ask Gemini what to do with the recognized text
         gemini_decision = ask_gemini_for_action(user_text)
@@ -433,8 +364,7 @@ def listen_voice():
         elif action == "none" and reply:
             reply_text = reply
         else:
-            # 🔁 Fallback: normal chat answer instead of "I'm not sure"
-            reply_text = fallback_chat(user_text)
+            reply_text = "I'm not sure what to do yet."
 
         print(f"✅ Reply: {reply_text}")
         return jsonify({"text": user_text, "reply": reply_text})
@@ -444,56 +374,30 @@ def listen_voice():
         print("❌ Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
-@app.route("/listen-voice-ai", methods=["POST"])
-def listen_voice_ai():
-    """🎙️ Voice input → Gemini reasoning → perform action safely."""
-    try:
-        with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
-        print("🧠 Processing your voice...")
 
-        try:
-            user_text = recognizer.recognize_google(audio)
-            print(f"🗣️ You said: {user_text}")
-        except sr.UnknownValueError:
-            msg = "I couldn't understand what you said. Please try again and speak clearly."
-            print("❌ STT UnknownValueError: ", msg)
-            return jsonify({"error": msg, "code": "stt_unknown", "can_retry": True}), 400
-        except sr.WaitTimeoutError:
-            msg = "I didn't hear anything. Try speaking again."
-            print("⏱️ STT WaitTimeoutError: ", msg)
-            return jsonify({"error": msg, "code": "stt_timeout", "can_retry": True}), 408
-        except sr.RequestError as e:
-            msg = f"Speech recognition service failed: {e}"
-            print("🌐 STT RequestError: ", msg)
-            return jsonify({"error": msg, "code": "stt_api_error", "can_retry": False}), 502
+# === Text-based route ===
+@app.route("/listen", methods=["POST"])
+def listen_text():
+    """📝 Handle text messages directly"""
+    data = request.get_json()
+    user_text = data.get("text", "").strip()
 
-        # 🧩 Try builtin first
-        builtin = handle_builtin_question(user_text)
-        if builtin:
-            print("⚡ Answered via builtin handler (AI route).")
-            return jsonify({"text": user_text, "reply": builtin})
+    if not user_text:
+        return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
 
-        # 🧠 Ask Gemini for what to do
-        gemini_decision = ask_gemini_for_action(user_text)
-        if not isinstance(gemini_decision, dict):
-            try:
-                gemini_decision = json.loads(str(gemini_decision))
-            except Exception:
-                gemini_decision = {"action": "none", "reply": str(gemini_decision)}
+    print(f"💬 Text command: {user_text}")
 
-        action = str(gemini_decision.get("action", "none")).lower()
-        target = gemini_decision.get("target") or ""
-        reply = gemini_decision.get("reply") or ""
-        content = gemini_decision.get("content") or ""
-        to = gemini_decision.get("to") or ""
-        subject = gemini_decision.get("subject") or ""
-        body = gemini_decision.get("body") or ""
-
-        print(f"🧩 Parsed action: {action}")
+    gemini_decision = ask_gemini_for_action(user_text)
+    action = gemini_decision.get("action", "none")
+    target = gemini_decision.get("target")
+    reply = gemini_decision.get("reply", "")
+    content = gemini_decision.get("content", "")
+    
+    # ✅ You added these lines, which is correct
+    to = gemini_decision.get("to", "")
+    subject = gemini_decision.get("subject", "")
+    body = gemini_decision.get("body", "")
 
         # Perform the action
         if action == "open_browser" and target:
