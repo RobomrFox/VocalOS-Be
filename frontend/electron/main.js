@@ -52,6 +52,9 @@ function createWindow() {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 
+  // ✅ Keep Audient always on top
+  win.setAlwaysOnTop(true, "screen-saver");
+
   console.log("✅ VocalAI window created and perfectly centered");
 
   win.on("resize", () => {

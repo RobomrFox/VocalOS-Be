@@ -92,6 +92,14 @@ export default function App() {
           { sender: "user", text: data.text },
           { sender: "ai", text: data.reply },
         ]);
+
+        // 🪄 Automatically move to side if Gemini triggered an app/browser
+        if (data.action === "open_browser" || data.action === "open_app" || data.action === "compose_email") {
+          console.log("🪟 Auto-docking window to side for external action...");
+          window.electron?.ipcRenderer?.send("move-window-side");
+          setCompactMode(true);
+        }
+
       } catch {
         setMessages((prev) => [
           ...prev,
