@@ -1,26 +1,47 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 /**
- * Simulates a typing animation for text.
- * 
- * @param {string} text - The full text to display.
- * @param {number} speed - Milliseconds per character.
- * @param {boolean} active - Whether typing is active.
+ * Stable Typewriter for chat messages.
+ * Prevents skipped first letter and ensures smooth typing.
  */
-export default function Typewriter({ text = "", speed = 25, active = true }) {
+export default function Typewriter({ text = "", speed = 10, active = true }) {
   const [displayedText, setDisplayedText] = useState("");
+  const indexRef = useRef(0);
+  const typingRef = useRef(null);
 
   useEffect(() => {
-    if (!active || !text) return setDisplayedText(text);
+    // 🧹 Clear any previous timers
+    clearTimeout(typingRef.current);
 
-    let i = 0;
-    const interval = setInterval(() => {
-      setDisplayedText((prev) => prev + text.charAt(i));
-      i++;
-      if (i >= text.length) clearInterval(interval);
-    }, speed);
+    // 🪄 Reset state for new text
+    indexRef.current = 0;
+    setDisplayedText("");
 
-    return () => clearInterval(interval);
+    if (!active || !text) {
+      setDisplayedText(text);
+      return;
+    }
+
+    // ✅ Delay start slightly to ensure first render completes
+    const startTyping = () => {
+      const typeNext = () => {
+        const nextChar = text.charAt(indexRef.current);
+        setDisplayedText((prev) => prev + nextChar);
+        indexRef.current += 1;
+
+        if (indexRef.current < text.length) {
+          typingRef.current = setTimeout(typeNext, speed);
+        }
+      };
+
+      // Start typing loop
+      typeNext();
+    };
+
+    // Small delay ensures React applies the reset before typing starts
+    typingRef.current = setTimeout(startTyping, 20);
+
+    return () => clearTimeout(typingRef.current);
   }, [text, active, speed]);
 
   return <span>{displayedText}</span>;

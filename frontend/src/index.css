@@ -163,7 +163,7 @@ h1 {
 .conversation {
   flex: 1 1 auto;
   min-height: 0;             /* crucial for flexbox scrolling */
-  overflow-y: auto;
+  overflow-y: auto !important;  /* ✅ ensures inner scroll works */
   overflow-x: hidden;
   padding: 1rem;
   display: flex;
@@ -376,4 +376,15 @@ h1 {
   margin-left: 3px;
   color: #38bdf8;
   animation: blinkCursor 1s infinite;
+}
+.typewriter-cursor::after {
+  content: "▋";
+  display: inline-block;
+  margin-left: 2px;
+  color: #38bdf8;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
 }

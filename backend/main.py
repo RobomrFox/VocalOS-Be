@@ -13,14 +13,14 @@ import pyautogui
 import pygetwindow as gw
 import traceback
 import sys
-sys.stdout.reconfigure(encoding='utf-8')
+from datetime import datetime  # ✅ for date/time answers
 
+sys.stdout.reconfigure(encoding='utf-8')
 
 # ✅ Load environment variables from .env
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 print(f"🔍 GOOGLE_API_KEY loaded? {'✅ Yes' if api_key else '❌ No'}")
-
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
@@ -31,7 +31,6 @@ if not api_key:
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-2.0-flash")
 print("✅ Gemini connected successfully!")
-
 
 recognizer = sr.Recognizer()
 
@@ -193,60 +192,165 @@ def compose_email(to, subject, body):
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
+# === Built-in quick answers (date/time etc.) ===
+def handle_builtin_question(user_text: str):
+    """Handle very simple questions locally without Gemini (date/time/day)."""
+    text = (user_text or "").strip().lower()
+    if not text:
+        return None
+
+    now = datetime.now()
+
+    # Time questions
+    if any(phrase in text for phrase in ["what time is it", "current time", "time now", "tell me the time"]):
+        return f"It’s {now.strftime('%I:%M %p')}."
+
+    # Date questions
+    if "date" in text or "today" in text:
+        # e.g. "what is the date today", "what's today's date"
+        return f"Today is {now.strftime('%A, %B %d, %Y')}."
+
+    # Day-of-week questions
+    if "what day is it" in text or ("day" in text and "today" in text):
+        return f"Today is {now.strftime('%A')}."
+
+    return None
+
+# === Fallback free-chat with Gemini ===
+def fallback_chat(user_text: str) -> str:
+    """If structured action flow can't help, just talk like a normal AI."""
+    try:
+        prompt = """
+You are VocalAI, a friendly conversational assistant.
+The user already tried a command mode and it wasn't helpful enough.
+Now just answer naturally and helpfully, with NO JSON, only plain text.
+"""
+        resp = model.generate_content(f"{prompt}\nUser: {user_text}")
+        reply = (resp.text or "").strip()
+        return reply or "Sorry, I’m still thinking about how to answer that."
+    except Exception as e:
+        print("❌ Fallback chat error:", e)
+        return "Sorry, something went wrong while trying to answer that."
 
 # === Ask Gemini for actions ===
 def ask_gemini_for_action(user_text):
-    """Ask Gemini to interpret the user's intent and return a safe structured action."""
+    """Ask Gemini to interpret user intent, handle memory-like context, auto-correct speech, and continuously self-correct while generating."""
+    import re
     open_windows = [w.title for w in gw.getAllWindows() if w.title]
     context = f"Currently open windows: {open_windows[:5]}"
 
-    # ✅ Escape all curly braces with double braces
-    system_prompt = """
-You are VocalAI, a desktop AI assistant that can perform user commands.
-You can open websites, launch apps, write or append text in programs, or compose emails in Gmail.
+    # 🧠 Persistent pseudo-memory (same as before)
+    memory_context = {
+        "known_contacts": ["professor", "John", "Ava", "Mom", "Dad"],
+        "known_hobbies": ["coding", "music", "travel", "photography"],
+        "recent_topics": ["hackathon", "Gemini integration", "VocalAI design"]
+    }
 
-Always reply **only in valid JSON** using one of the following structures:
+    # 🪄 STEP 1: Pre-correct the speech text before reasoning (lightweight + fast)
+    try:
+        correction_prompt = f"""
+        You are a precise language model helping correct speech-to-text output.
+        The user's phrase came from microphone transcription: "{user_text}".
+        Fix any misspellings, missing letters, spacing issues, or duplicated words
+        while keeping the same meaning and tone.
+        Return ONLY the corrected sentence (no explanation, no quotes).
+        """
+        correction = model.generate_content(correction_prompt)
+        corrected_text = (correction.text or "").strip()
+        if corrected_text:
+            print(f"🪄 Auto-corrected speech → {corrected_text}")
+            user_text = corrected_text
+    except Exception as e:
+        print(f"⚠️ Spell correction skipped: {e}")
 
+    # === STEP 2: Enhanced reasoning prompt with continuous correction awareness ===
+    system_prompt = f"""
+You are VocalAI — a friendly, proactive AI desktop assistant that listens to speech and acts or replies naturally.
+
+The user's message was transcribed from spoken audio: "{user_text}"
+(which may still include minor misheard or mispronounced words).
+
+Your reasoning and output generation rules:
+1️⃣ As you generate your reasoning and final response, continuously self-correct any remaining
+    speech or transcription errors in real time — do NOT mention corrections.
+2️⃣ Always interpret what the user *meant*, even if the transcript contains partial or broken words.
+3️⃣ Keep your tone natural, concise, and humanlike.
+4️⃣ Return output strictly as JSON — never add Markdown, explanations, or comments outside JSON.
+
+Supported actions (choose ONE main intent per response):
+
+### 🧩 Functional Actions
 - {{ "action": "open_browser", "target": "<url or website name>" }}
 - {{ "action": "open_app", "target": "<local application name>" }}
-- {{ "action": "write_text", "target": "<app name>", "content": "<the text to write>" }}
+- {{ "action": "write_text", "target": "<app name>", "content": "<text to write>" }}
 - {{ "action": "append_text", "target": "<app name>", "content": "<text to add>" }}
 - {{ "action": "compose_email", "to": "<recipient email or name>", "subject": "<subject line>", "body": "<email body text>" }}
-- {{ "action": "none", "reply": "<textual reply>" }}
+- {{ "action": "search", "query": "<topic or item to search>" }}
+- {{ "action": "show_reminder", "time": "<datetime or relative time>", "content": "<reminder text>" }}
 
-Example:
-User: "Send an email to my professor about my project progress."
-→ {{ "action": "compose_email", "to": "professor", "subject": "Project Progress Update", "body": "Dear Professor, I wanted to update you on my current project progress..." }}
+### 💬 Conversational Replies
+- {{ "action": "none", "reply": "<response as VocalAI in a natural tone>" }}
 
-Be concise, structured, and strictly output JSON.
-Context:
-{}
-""".format(context)
+### 🧠 Memory / Personalization
+If the user says something like “Remember my hobby is painting” or “My brother’s name is Sam”, store it:
+- {{ "action": "remember", "type": "hobby" | "contact" | "fact", "content": "<the info to remember>", "reply": "<short acknowledgment>" }}
+
+If the user asks something about remembered info:
+- {{ "action": "recall", "type": "<hobby/contact/fact>", "reply": "<what you remember>" }}
+
+Example interactions:
+
+User: "Remember my friend Jake likes photography."
+→ {{ "action": "remember", "type": "contact", "content": "Jake likes photography", "reply": "Got it! I'll remember Jake is into photography." }}
+
+User: "What do you know about my hobbies?"
+→ {{ "action": "recall", "type": "hobby", "reply": "You mentioned enjoying coding, music, and photography." }}
+
+User: "Send an email to my professor about my project update."
+→ {{ "action": "compose_email", "to": "professor", "subject": "Project Update", "body": "Hi Professor, here’s my latest progress on the project..." }}
+
+User: "Play some music."
+→ {{ "action": "open_app", "target": "Spotify" }}
+
+Current context:
+{context}
+
+Known memory:
+{memory_context}
+"""
 
     print("🧠 Asking Gemini to interpret + generate meaningful content...")
-    response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
-    text = (response.text or "").strip()
-    print(f"🤖 Gemini raw output: {text}")
 
-    # ✅ Strip Markdown fences if present
-    if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
-
-    # ✅ Try parsing safely
     try:
-        return json.loads(text)
-    except Exception as e:
-        print(f"⚠️ JSON parsing failed: {e}")
-        # Try to extract first valid JSON-looking segment
-        import re
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            try:
-                return json.loads(match.group(0))
-            except Exception as e2:
-                print(f"⚠️ Fallback parse failed: {e2}")
-        # Final fallback
+        response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
+        text = (response.text or "").strip()
+        print(f"🤖 Gemini raw output: {text}")
+
+        # ✅ Clean Markdown formatting if present
+        if text.startswith("```"):
+            text = text.replace("```json", "").replace("```", "").strip()
+
+        # ✅ Try parsing JSON directly
+        try:
+            parsed = json.loads(text)
+            return parsed
+        except Exception as e:
+            print(f"⚠️ JSON parsing failed: {e}")
+            # Attempt to extract JSON-like substring
+            match = re.search(r"\{[\s\S]*\}", text)
+            if match:
+                try:
+                    parsed = json.loads(match.group(0))
+                    return parsed
+                except Exception as e2:
+                    print(f"⚠️ Fallback parse failed: {e2}")
+
+        # 🧩 Fallback — treat the entire string as natural chat
         return {"action": "none", "reply": text}
+
+    except Exception as e:
+        print("❌ ask_gemini_for_action error:", e)
+        return {"action": "none", "reply": "Sorry, something went wrong while thinking about that."}
 
 
 
@@ -262,11 +366,9 @@ def listen_voice():
         print("🧠 Processing your voice...")
 
         try:
-            # 👉 This is the line that was crashing before
             user_text = recognizer.recognize_google(audio)
             print(f"🗣️ You said: {user_text}")
         except sr.UnknownValueError:
-            # Could not understand the audio
             msg = "I couldn't understand what you said. Please try again and speak clearly."
             print("❌ STT UnknownValueError: ", msg)
             return jsonify({
@@ -283,7 +385,6 @@ def listen_voice():
                 "can_retry": True
             }), 408
         except sr.RequestError as e:
-            # Network/API issue with Google STT
             msg = f"Speech recognition service failed: {e}"
             print("🌐 STT RequestError: ", msg)
             return jsonify({
@@ -291,6 +392,12 @@ def listen_voice():
                 "code": "stt_api_error",
                 "can_retry": False
             }), 502
+
+        # 🧩 First, check if we can answer locally (date/time/etc.)
+        builtin = handle_builtin_question(user_text)
+        if builtin:
+            print("⚡ Answered via builtin handler.")
+            return jsonify({"text": user_text, "reply": builtin})
 
         # 🧠 Ask Gemini what to do with the recognized text
         gemini_decision = ask_gemini_for_action(user_text)
@@ -326,7 +433,8 @@ def listen_voice():
         elif action == "none" and reply:
             reply_text = reply
         else:
-            reply_text = "I'm not sure what to do yet."
+            # 🔁 Fallback: normal chat answer instead of "I'm not sure"
+            reply_text = fallback_chat(user_text)
 
         print(f"✅ Reply: {reply_text}")
         return jsonify({"text": user_text, "reply": reply_text})
@@ -335,8 +443,6 @@ def listen_voice():
         # 🔥 Log full traceback for debugging
         print("❌ Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
-
 
 @app.route("/listen-voice-ai", methods=["POST"])
 def listen_voice_ai():
@@ -364,6 +470,12 @@ def listen_voice_ai():
             msg = f"Speech recognition service failed: {e}"
             print("🌐 STT RequestError: ", msg)
             return jsonify({"error": msg, "code": "stt_api_error", "can_retry": False}), 502
+
+        # 🧩 Try builtin first
+        builtin = handle_builtin_question(user_text)
+        if builtin:
+            print("⚡ Answered via builtin handler (AI route).")
+            return jsonify({"text": user_text, "reply": builtin})
 
         # 🧠 Ask Gemini for what to do
         gemini_decision = ask_gemini_for_action(user_text)
@@ -395,7 +507,7 @@ def listen_voice_ai():
         elif action == "none" and reply:
             reply_text = reply
         else:
-            reply_text = "I'm not sure what to do yet."
+            reply_text = fallback_chat(user_text)
 
         print(f"✅ Reply: {reply_text}")
         return jsonify({"text": user_text, "reply": reply_text})
@@ -403,7 +515,6 @@ def listen_voice_ai():
     except Exception as e:
         print("❌ Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
 
 @app.route("/wakeword", methods=["POST"])
 def wakeword():
@@ -451,9 +562,6 @@ def wakeword():
     except Exception as e:
         print("❌ Wakeword detection failed:", e)
         return jsonify({"wakeword_detected": False, "error": str(e)})
-
-
-
 
 # === Run server ===
 if __name__ == "__main__":
