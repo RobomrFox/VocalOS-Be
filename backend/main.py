@@ -1,3 +1,6 @@
+# main.py
+# This is the ONLY file you need to run.
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import speech_recognition as sr
@@ -11,6 +14,9 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
+import requests
+import atexit
+import sys
 from dotenv import load_dotenv
 
 from stt import VoiceSignature
@@ -37,25 +43,80 @@ model = genai.GenerativeModel("gemini-2.0-flash")
 
 recognizer = sr.Recognizer()
 
-# === Helper functions ===
+# --- Subprocess Management ---
+PLAYWRIGHT_SERVICE_URL = "http://127.0.0.1:5001/execute"
+playwright_process = None
 
-def open_browser(target):
-    """Open URL in system default browser."""
+def start_playwright_service():
+    """
+    Checks if the Playwright service is running. If not, starts it.
+    """
+    global playwright_process
     try:
-        print(f"🌐 Opening browser: {target}")
+        requests.post(PLAYWRIGHT_SERVICE_URL, json={"action": "get_title"}, timeout=0.5)
+    except requests.exceptions.ConnectionError:
+        print("🧠 [main.py]: Playwright service not found. Starting...")
+        try:
+            script_dir = os.path.dirname(os.path.realpath(__file__))
+            service_path = os.path.join(script_dir, "Automations", "web_browsing", "playwright_service.py")
+
+            if not os.path.exists(service_path):
+                print(f"❌ [main.py]: CRITICAL ERROR: Cannot find '{service_path}'")
+                return
+
+            playwright_process = subprocess.Popen([sys.executable, service_path])
+            print(f"🧠 [main.py]: Started service with PID: {playwright_process.pid}")
+            time.sleep(4) 
+        except Exception as e:
+            print(f"🧠 [main.py]: ❌ FAILED to start playwright_service.py: {e}")
+    except requests.exceptions.Timeout:
+        pass
+
+def call_playwright_service(action_payload):
+    """Ensures the service is running, then sends it a command."""
+    start_playwright_service() # Smart-check
+    
+    try:
+        response = requests.post(PLAYWRIGHT_SERVICE_URL, json=action_payload)
+        
+        if response.status_code == 200:
+            return response.json().get("reply", "OK")
+        else:
+            return f"Error controlling browser: {response.json().get('reply', 'Unknown error')}"
+    except requests.exceptions.ConnectionError:
+        return "Failed to connect to browser service after restart."
+    except Exception as e:
+        return f"Error in Playwright service: {e}"
+
+def shutdown_services():
+    """Runs on exit to kill the background process."""
+    global playwright_process
+    if playwright_process:
+        print(f"🧠 [main.py]: Shutting down background service (PID: {playwright_process.pid})...")
+        playwright_process.terminate()
+        playwright_process.wait()
+        print("🧠 [main.py]: Background service shut down.")
+
+atexit.register(shutdown_services)
+
+
+# --- Original Helper Functions (Unchanged) ---
+def open_browser(target):
+    """Open URL in system default browser (NEW TAB)."""
+    try:
+        print(f"🌐 Opening NEW tab: {target}")
         webbrowser.open(target)
-        return f"Opening {target} in your browser."
+        return f"Opening {target} in a new tab."
     except Exception as e:
         return f"❌ Failed to open browser: {e}"
 
 def open_local_app(app_name):
-    """Cross-platform local app opener that handles Windows paths."""
+    # ... (This function is unchanged) ...
     try:
         system = platform.system().lower()
         print(f"🖥️ Launching app: {app_name}")
 
         if system == "windows":
-            # Common Windows app locations
             app_paths = {
                 "chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 "google chrome": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -67,9 +128,7 @@ def open_local_app(app_name):
                 "explorer": "explorer.exe",
                 "word": r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
             }
-
             exe_path = app_paths.get(app_name.lower())
-
             if exe_path:
                 exe_path = os.path.expandvars(exe_path)
                 subprocess.Popen(exe_path)
@@ -77,39 +136,31 @@ def open_local_app(app_name):
             else:
                 subprocess.Popen(f'start {app_name}', shell=True)
                 return f"Trying to launch {app_name}..."
-        
-        elif system == "darwin":  # macOS
+        elif system == "darwin":
             subprocess.Popen(["open", "-a", app_name])
             return f"Opening {app_name} on macOS."
-        
         elif system == "linux":
             subprocess.Popen([app_name])
             return f"Launching {app_name} on Linux."
-        
         else:
             raise Exception("Unsupported OS")
-    
     except Exception as e:
         print(f"❌ Failed to open {app_name}: {e}")
         return f"Sorry, I couldn’t open {app_name}."
 
 def write_to_app(app_name, content):
-    """Focus the app window and type content reliably (Windows-safe)."""
-    import pyautogui, pygetwindow as gw, subprocess, time, platform
-
+    # ... (This function is unchanged) ...
     try:
         system = platform.system().lower()
         target = app_name.lower()
         print(f"✍️ Preparing to write into {target}...")
 
-        # 1️⃣ Ensure it's open
         wins = [w for w in gw.getAllWindows() if target in w.title.lower()]
         if not wins:
             print(f"⚠️ {app_name} not open, launching...")
             open_local_app(app_name)
             time.sleep(3)
 
-        # 2️⃣ Wait until window appears
         for _ in range(12):
             wins = [w for w in gw.getAllWindows() if target in w.title.lower()]
             if wins:
@@ -118,11 +169,9 @@ def write_to_app(app_name, content):
 
         if not wins:
             return f"❌ Could not find {app_name} window."
-
         win = wins[0]
         print(f"🪟 Found: {win.title}")
 
-        # 3️⃣ Bring to foreground
         if system == "windows":
             subprocess.run(
                 ["powershell", "-Command",
@@ -133,7 +182,6 @@ def write_to_app(app_name, content):
             win.activate()
         time.sleep(1.0)
 
-        # 4️⃣ Confirm active window
         for _ in range(5):
             active = gw.getActiveWindow()
             if active and target in active.title.lower():
@@ -141,56 +189,42 @@ def write_to_app(app_name, content):
                 break
             time.sleep(0.5)
 
-        # 5️⃣ Type content
         print(f"⌨️ Typing:\n{content}")
         pyautogui.typewrite(content, interval=0.04)
         print("✅ Typing done.")
         return f"✅ Wrote your text into {app_name}."
-
     except Exception as e:
         print(f"❌ Failed to write: {e}")
         return f"Couldn’t write into {app_name}: {e}"
     
 def compose_email(to, subject, body):
-    """Force open Gmail compose window directly with pre-filled fields."""
+    # ... (This function is unchanged) ...
     try:
         import urllib.parse
-
-        # Encode user input
         to_encoded = urllib.parse.quote(to or "")
         subject_encoded = urllib.parse.quote(subject or "")
         body_encoded = urllib.parse.quote(body or "")
-
-        # Gmail compose URL
         gmail_url = (
             f"https://mail.google.com/mail/?view=cm&fs=1"
             f"&to={to_encoded}&su={subject_encoded}&body={body_encoded}"
         )
-
         print(f"📧 Redirecting to Gmail compose for: {to}")
-
-        # --- Try forcing Chrome or Edge explicitly (works better than webbrowser.open)
         system = platform.system().lower()
         if system == "windows":
             chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
             edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-
             if os.path.exists(chrome_path):
                 subprocess.Popen([chrome_path, gmail_url])
                 return f"📨 Composing an email to {to or 'recipient'} via Chrome."
             elif os.path.exists(edge_path):
                 subprocess.Popen([edge_path, gmail_url])
-                return f"📨 Composing an email to {to or 'recipient'} via Edge."
+                return f"📨 ComTposing an email to {to or 'recipient'} via Edge."
             else:
-                # fallback to system default browser
                 os.startfile(gmail_url)
                 return f"📨 Composing an email to {to or 'recipient'} in default browser."
-
         else:
-            # macOS / Linux fallback
             webbrowser.open(gmail_url)
             return f"📨 Composing an email to {to or 'recipient'}."
-
     except Exception as e:
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
@@ -203,57 +237,112 @@ def get_open_windows():
         # On macOS/Linux, cannot enumerate windows with pygetwindow
         return []
 
-# === Ask Gemini for actions ===
+# === Ask Gemini for actions (PROMPT IS UPGRADED) ===
 def ask_gemini_for_action(user_text):
     """Ask Gemini to interpret the user's intent and return a safe structured action."""
     open_windows = get_open_windows()
     context = f"Currently open windows: {open_windows[:5]}"
     # ✅ Escape all curly braces with double braces
     system_prompt = """
-You are VocalAI, a desktop AI assistant that can perform user commands.
-You can open websites, launch apps, write or append text in programs, or compose emails in Gmail.
+You are VocalAI, a desktop AI assistant that translates user speech into JSON commands.
+You can control a web browser and local applications.
 
 Always reply **only in valid JSON** using one of the following structures:
 
-- {{ "action": "open_browser", "target": "<url or website name>" }}
-- {{ "action": "open_app", "target": "<local application name>" }}
-- {{ "action": "write_text", "target": "<app name>", "content": "<the text to write>" }}
-- {{ "action": "append_text", "target": "<app name>", "content": "<text to add>" }}
-- {{ "action": "compose_email", "to": "<recipient email or name>", "subject": "<subject line>", "body": "<email body text>" }}
+--- Local Actions ---
+- {{ "action": "open_app", "target": "<app_name>" }}
+- {{ "action": "write_text", "target": "<app_name>", "content": "<text>" }}
+- {{ "action": "compose_email", "to": "<recipient>", "subject": "<subject>", "body": "<body>" }}
+- {{ "action": "open_browser", "target": "<url>" }} (Opens a NEW tab)
+
+--- Controlled Browser Actions ---
+- {{ "action": "playwright_goto", "target": "<url>" }} (Navigates the CURRENT tab)
+- {{ "action": "playwright_fill", "selector": "<css_selector>", "content": "<text>" }}
+- {{ "action": "playwright_press", "selector": "<css_selector>", "key": "<key>" }}
+- {{ "action": "playwright_scroll", "direction": "<up|down>" }}
+- {{ "action": "playwright_click_first_google_result" }}
+- {{ "action": "playwright_click_first_youtube_video" }}
+
+--- Fallback ---
 - {{ "action": "none", "reply": "<textual reply>" }}
 
-Example:
-User: "Send an email to my professor about my project progress."
-→ {{ "action": "compose_email", "to": "professor", "subject": "Project Progress Update", "body": "Dear Professor, I wanted to update you on my current project progress..." }}
+--- CONTEXTUAL RULES ---
+You MUST use the "Active controlled browser page" context to decide the correct selector.
 
-Be concise, structured, and strictly output JSON.
+1. **APP VS. BROWSER (CRITICAL RULE):**
+   - If the user says "open Google", "open Chrome", "open YouTube", "open Gmail", or any other website,
+     you MUST use the `playwright_goto` action.
+   - Example: User says "open Google Chrome" -> {{ "action": "playwright_goto", "target": "google.com" }}
+   - You should ONLY use `open_app` for non-browser applications like "Notepad", "Calculator", "Word", etc.
+   - Example: User says "open notepad" -> {{ "action": "open_app", "target": "notepad" }}
+
+2. **FILLING/SEARCHING (playwright_fill):**
+   - If the page title contains "Google", use selector: `[name='q']`
+   - If the page title contains "YouTube", use selector: `input#search`
+   - If the page title is unknown, you cannot fill.
+
+3. **CLICKING (playwright_click_...):**
+   - If the user says "click the first result" AND the page title contains "Google Search", use:
+     `{{ "action": "playwright_click_first_google_result" }}`
+   - If the user says "click the first video" OR "click the first result" AND the page title contains "YouTube", use:
+     `{{ "action": "playwright_click_first_youtube_video" }}`
+
+4. **SCROLLING (playwright_scroll):**
+   - If the user says "scroll down", "go down", or "scroll", use:
+     `{{ "action": "playwright_scroll", "direction": "down" }}`
+   - If the user says "scroll up" or "go up", use:
+     `{{ "action": "playwright_scroll", "direction": "up" }}`
+
+--- EXAMPLES ---
+Context:
+Active controlled browser page: Google
+User: "open Google Chrome"
+→ {{ "action": "playwright_goto", "target": "google.com" }}
+
+Context:
+Active controlled browser page: YouTube
+User: "open notepad"
+→ {{ "action": "open_app", "target": "notepad" }}
+
+Context:
+Active controlled browser page: Google
+User: "search for dantdm"
+→ {{ "action": "playwright_fill", "selector": "[name='q']", "content": "dantdm" }}
+
+Context:
+Active controlled browser page: Google Search Results
+User: "click the first link"
+→ {{ "action": "playwright_click_first_google_result" }}
+
+Context:
+Active controlled browser page: YouTube - Home
+User: "look up cats"
+→ {{ "action": "playwright_fill", "selector": "input#search", "content": "cats" }}
+
 Context:
 {}
 """.format(context)
 
-    print("🧠 Asking Gemini to interpret + generate meaningful content...")
+
+    print("🧠 [main.py]: Asking Gemini to interpret...")
     response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
     text = (response.text or "").strip()
-    print(f"🤖 Gemini raw output: {text}")
+    print(f"🤖 [main.py]: Gemini raw output: {text}")
 
-    # ✅ Strip Markdown fences if present
     if text.startswith("```"):
         text = text.replace("```json", "").replace("```", "").strip()
 
-    # ✅ Try parsing safely
     try:
         return json.loads(text)
     except Exception as e:
-        print(f"⚠️ JSON parsing failed: {e}")
-        # Try to extract first valid JSON-looking segment
+        print(f"⚠️ [main.py]: JSON parsing failed: {e}")
         import re
         match = re.search(r"\{[\s\S]*\}", text)
         if match:
             try:
                 return json.loads(match.group(0))
             except Exception as e2:
-                print(f"⚠️ Fallback parse failed: {e2}")
-        # Final fallback
+                print(f"⚠️ [main.py]: Fallback parse failed: {e2}")
         return {"action": "none", "reply": text}
 
 
@@ -320,37 +409,42 @@ def listen_text():
     """📝 Handle text messages directly"""
     data = request.get_json()
     user_text = data.get("text", "").strip()
-
     if not user_text:
         return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
-
-    print(f"💬 Text command: {user_text}")
+    print(f"💬 [main.py]: Text command: {user_text}")
 
     gemini_decision = ask_gemini_for_action(user_text)
     action = gemini_decision.get("action", "none")
-    target = gemini_decision.get("target")
-    reply = gemini_decision.get("reply", "")
-    content = gemini_decision.get("content", "")
-    
-    # ✅ You added these lines, which is correct
-    to = gemini_decision.get("to", "")
-    subject = gemini_decision.get("subject", "")
-    body = gemini_decision.get("body", "")
 
-    if action == "open_browser" and target:
-        reply_text = open_browser(target)
-    elif action == "open_app" and target:
-        reply_text = open_local_app(target)
-    elif action == "write_text" and target and content:
-        reply_text = write_to_app(target, content)
-    # 🚨 ADD THIS BLOCK:
+    # 1. Handle Local Actions
+    if action == "open_browser":
+        reply_text = open_browser(gemini_decision.get("target"))
+    elif action == "open_app":
+        reply_text = open_local_app(gemini_decision.get("target"))
+    elif action == "write_text":
+        reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
     elif action == "compose_email":
-        reply_text = compose_email(to, subject, body)
+        reply_text = compose_email(gemini_decision.get("to"), gemini_decision.get("subject"), gemini_decision.get("body"))
+    
+    # 2. Handle Playwright Actions
+    elif action.startswith("playwright_"):
+        payload = gemini_decision.copy()
+        payload["action"] = action.replace("playwright_", "") # "playwright_goto" -> "goto"
+        reply_text = call_playwright_service(payload)
+
+    # 3. Handle Fallback
+    elif action == "none":
+        reply_text = gemini_decision.get("reply")
     else:
-        reply_text = reply or "I'm here and listening."
+        reply_text = gemini_decision.get("reply") or "I'm here and listening."
 
     return jsonify({"reply": reply_text})
 
 # === Run server ===
 if __name__ == "__main__":
-    app.run(debug=True)
+    
+    print("🧠 [main.py]: Starting main server...")
+    start_playwright_service()
+    
+    print("🧠 [main.py]: ✅ Main server running on [http://127.0.0.1:5000](http://127.0.0.1:5000)")
+    app.run(port=5000, debug=True, use_reloader=False)
