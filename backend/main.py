@@ -17,7 +17,13 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
+import re  # ✅ Needed for regex parsing
+import threading
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
 from dotenv import load_dotenv
+
 
 from stt import VoiceSignature
 
@@ -376,6 +382,101 @@ def listen_text():
 
     return jsonify({"reply": reply_text})
 
-# === Run server ===
+# ==============================================================
+# 💤 Wakeword Detection Route
+# ==============================================================
+
+@app.route("/wakeword", methods=["POST"])
+def wakeword():
+    try:
+        with sr.Microphone() as source:
+            print("🎤 Listening for possible wake phrase...")
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
+
+        text = recognizer.recognize_google(audio).lower()
+        print(f"🗣️ Heard → {text}")
+
+        # ✅ Use double braces {{ }} so they render literally
+        prompt = """
+        You are Audient, a voice assistant.
+        Determine if the user is trying to wake up or greet you.
+        If it sounds like 'hey computer', 'hello', 'hi computer', etc., return:
+        { "wake": true, "reason": "greeting detected" }
+        Otherwise return:
+        { "wake": false, "reason": "not a wake phrase" }
+        User said: "<text>"
+        """.replace("<text>", text)
+
+
+        result = model.generate_content(prompt)
+        reply = result.text.strip()
+
+        match = re.search(r"\{[\s\S]*\}", reply)
+        data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
+
+        print(f"🤖 Gemini decision → {data}")
+
+        return jsonify({
+            "wakeword_detected": data.get("wake", False),
+            "text": text,
+            "reason": data.get("reason", "")
+        })
+
+    except sr.UnknownValueError:
+        return jsonify({"wakeword_detected": False, "error": "no speech detected"})
+    except Exception as e:
+        print("❌ Wakeword detection failed:", e)
+        return jsonify({"wakeword_detected": False, "error": str(e)})
+
+
+def wakeword_background_listener():
+    """Continuously listens for wake words and triggers main listening flow."""
+    while True:
+        try:
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                print("👂 Passive listening for wake word...")
+                audio = recognizer.listen(source, timeout=4, phrase_time_limit=4)
+
+            text = ""
+            try:
+                text = recognizer.recognize_google(audio).lower()
+                print(f"🗣️ Passive heard: {text}")
+            except sr.UnknownValueError:
+                continue  # just ignore silence
+            except Exception as e:
+                print("⚠️ Wakeword recognition issue:", e)
+                continue
+
+            # If the user says "hey audient" or "ok audient"
+            if re.search(r"\b(hey|hi|ok)\s+(audient|assistant|computer)\b", text):
+                print("🎉 Wake word detected! Activating listening mode...")
+                # Trigger real listening process
+                try:
+                    with app.test_request_context("/listen-voice", method="POST", json={"trigger": "wake"}):
+                        listen_voice()
+                except Exception as e:
+                    print("⚠️ Wake listener trigger failed:", e)
+        except Exception as e:
+            print("⚠️ Wakeword listener loop error:", e)
+            time.sleep(1)
+
+# ==============================================================
+# 🚀 Run Server
+# ==============================================================
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    print("🚀 Initializing VocalAI backend...")
+
+    # ✅ Start the background thread FIRST before Flask starts
+    wake_thread = threading.Thread(
+        target=wakeword_background_listener,
+        daemon=True  # stops automatically when Flask exits
+    )
+    wake_thread.start()
+    print("🎧 Wakeword listener thread started successfully!")
+
+    # ✅ Run Flask ONCE with reloader disabled to prevent double instances
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
+    
