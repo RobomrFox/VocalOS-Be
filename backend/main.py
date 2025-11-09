@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, request
 from flask_cors import CORS
 import speech_recognition as sr
 import time
@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+recognizer = sr.Recognizer()
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
@@ -24,6 +26,24 @@ genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 
 recognizer = sr.Recognizer()
+
+#speech recognition setup 
+
+
+@app.route("/listen-voice", methods=["POST"])
+def listen_voice():
+    try:
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+        user_text = recognizer.recognize_google(audio)
+        return jsonify({"text": user_text, "reply": f"Received: {user_text}"})
+    except sr.UnknownValueError:
+        return jsonify({"error": "Could not understand audio."}), 400
+    except sr.WaitTimeoutError:
+        return jsonify({"error": "Listening timed out."}), 408
+    except sr.RequestError as e:
+        return jsonify({"error": f"API request failed: {e}"}), 502
 
 # === Helper functions ===
 
