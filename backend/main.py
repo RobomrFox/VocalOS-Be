@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from dotenv import load_dotenv
 from flask_cors import CORS
 import speech_recognition as sr
 import time
@@ -15,13 +16,22 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 
+# ✅ Load environment variables from .env
+load_dotenv()
+api_key = os.getenv("GOOGLE_API_KEY")
+print(f"🔍 GOOGLE_API_KEY loaded? {'✅ Yes' if api_key else '❌ No'}")
+
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # === Gemini API setup ===
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBqVYWth6gOopleZ-hDI3in0I_dB_BZFto"
-genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+if not api_key:
+    raise EnvironmentError("❌ Missing GOOGLE_API_KEY in .env file.")
+genai.configure(api_key=api_key)
 model = genai.GenerativeModel("gemini-2.0-flash")
+print("✅ Gemini connected successfully!")
+
 
 recognizer = sr.Recognizer()
 
@@ -328,42 +338,122 @@ def listen_voice():
 
 
 
-# === Text-based route ===
-@app.route("/listen", methods=["POST"])
-def listen_text():
-    """📝 Handle text messages directly"""
-    data = request.get_json()
-    user_text = data.get("text", "").strip()
+@app.route("/listen-voice-ai", methods=["POST"])
+def listen_voice_ai():
+    """🎙️ Voice input → Gemini reasoning → perform action safely."""
+    try:
+        with sr.Microphone() as source:
+            print("🎧 Listening... please speak clearly.")
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
-    if not user_text:
-        return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
+        print("🧠 Processing your voice...")
 
-    print(f"💬 Text command: {user_text}")
+        try:
+            user_text = recognizer.recognize_google(audio)
+            print(f"🗣️ You said: {user_text}")
+        except sr.UnknownValueError:
+            msg = "I couldn't understand what you said. Please try again and speak clearly."
+            print("❌ STT UnknownValueError: ", msg)
+            return jsonify({"error": msg, "code": "stt_unknown", "can_retry": True}), 400
+        except sr.WaitTimeoutError:
+            msg = "I didn't hear anything. Try speaking again."
+            print("⏱️ STT WaitTimeoutError: ", msg)
+            return jsonify({"error": msg, "code": "stt_timeout", "can_retry": True}), 408
+        except sr.RequestError as e:
+            msg = f"Speech recognition service failed: {e}"
+            print("🌐 STT RequestError: ", msg)
+            return jsonify({"error": msg, "code": "stt_api_error", "can_retry": False}), 502
 
-    gemini_decision = ask_gemini_for_action(user_text)
-    action = gemini_decision.get("action", "none")
-    target = gemini_decision.get("target")
-    reply = gemini_decision.get("reply", "")
-    content = gemini_decision.get("content", "")
-    
-    # ✅ You added these lines, which is correct
-    to = gemini_decision.get("to", "")
-    subject = gemini_decision.get("subject", "")
-    body = gemini_decision.get("body", "")
+        # 🧠 Ask Gemini for what to do
+        gemini_decision = ask_gemini_for_action(user_text)
+        if not isinstance(gemini_decision, dict):
+            try:
+                gemini_decision = json.loads(str(gemini_decision))
+            except Exception:
+                gemini_decision = {"action": "none", "reply": str(gemini_decision)}
 
-    if action == "open_browser" and target:
-        reply_text = open_browser(target)
-    elif action == "open_app" and target:
-        reply_text = open_local_app(target)
-    elif action == "write_text" and target and content:
-        reply_text = write_to_app(target, content)
-    # 🚨 ADD THIS BLOCK:
-    elif action == "compose_email":
-        reply_text = compose_email(to, subject, body)
-    else:
-        reply_text = reply or "I'm here and listening."
+        action = str(gemini_decision.get("action", "none")).lower()
+        target = gemini_decision.get("target") or ""
+        reply = gemini_decision.get("reply") or ""
+        content = gemini_decision.get("content") or ""
+        to = gemini_decision.get("to") or ""
+        subject = gemini_decision.get("subject") or ""
+        body = gemini_decision.get("body") or ""
 
-    return jsonify({"reply": reply_text})
+        print(f"🧩 Parsed action: {action}")
+
+        # Perform the action
+        if action == "open_browser" and target:
+            reply_text = open_browser(target)
+        elif action == "open_app" and target:
+            reply_text = open_local_app(target)
+        elif action == "write_text" and target and content:
+            reply_text = write_to_app(target, content)
+        elif action == "compose_email":
+            reply_text = compose_email(to, subject, body)
+        elif action == "none" and reply:
+            reply_text = reply
+        else:
+            reply_text = "I'm not sure what to do yet."
+
+        print(f"✅ Reply: {reply_text}")
+        return jsonify({"text": user_text, "reply": reply_text})
+
+    except Exception as e:
+        print("❌ Full backend error:\n", traceback.format_exc())
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route("/wakeword", methods=["POST"])
+def wakeword():
+    """🎧 Gemini interprets if spoken phrase is a wake-up call."""
+    try:
+        with sr.Microphone() as source:
+            print("🎤 Listening for possible wake phrase...")
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
+
+        # Convert to text
+        text = recognizer.recognize_google(audio).lower()
+        print(f"🗣️ Heard → {text}")
+
+        # Ask Gemini if this is a wake-up phrase
+        prompt = f"""
+        You are Audient, a voice assistant.
+        Determine if the user is trying to wake you up or greet you.
+        If the phrase sounds like 'hey audient', 'hello', 'hi audient', or any greeting
+        meant to activate you, return:
+        {{ "wake": true, "reason": "greeting detected" }}
+        Otherwise return:
+        {{ "wake": false, "reason": "not a wake phrase" }}
+
+        User said: "{text}"
+        """
+        result = model.generate_content(prompt)
+        reply = result.text.strip()
+
+        # clean JSON
+        import re, json
+        match = re.search(r"\{[\s\S]*\}", reply)
+        data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
+
+        print(f"🤖 Gemini decision → {data}")
+
+        return jsonify({
+            "wakeword_detected": data.get("wake", False),
+            "text": text,
+            "reason": data.get("reason", "")
+        })
+
+    except sr.UnknownValueError:
+        return jsonify({"wakeword_detected": False, "error": "no speech detected"})
+    except Exception as e:
+        print("❌ Wakeword detection failed:", e)
+        return jsonify({"wakeword_detected": False, "error": str(e)})
+
+
+
 
 # === Run server ===
 if __name__ == "__main__":

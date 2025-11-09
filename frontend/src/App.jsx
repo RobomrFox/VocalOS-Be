@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import Typewriter from "./components/Typewriter";
 
 export default function App() {
   const [listening, setListening] = useState(false);
@@ -9,6 +10,7 @@ export default function App() {
   const [appLoaded, setAppLoaded] = useState(false);
   const chatRef = useRef(null);
   const [compactMode, setCompactMode] = useState(false);
+  const [micIntensity, setMicIntensity] = useState(0); // 🔊 RMS-driven glow strength
 
   // ✅ Connection check with preload
   useEffect(() => {
@@ -77,7 +79,10 @@ export default function App() {
       try {
         const res = await fetch("http://127.0.0.1:5000/listen-voice", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trigger: "listen" }),
         });
+
         const data = await res.json();
 
         if (!res.ok) throw new Error(data.error || "Voice recognition failed.");
@@ -118,16 +123,26 @@ export default function App() {
         appLoaded ? "opacity-100 scale-100" : "opacity-0 scale-95"
       }`}
     >
-      {/* 🎧 Halo Visualizer */}
-      {listening && <MockHaloVisualizer />}
+      {/* 🎧 Mic-driven glow visualizer */}
+      {listening && <MockHaloGlow onIntensityChange={setMicIntensity} />}
 
-      {/* 🪞 Glass Container */}
+      {/* 🪞 Glass Container with mic glow intensity */}
       <div
         className={`glass-card relative z-10 flex flex-col transition-all duration-700 ease-in-out ${
           compactMode
             ? "w-full h-full px-5 py-4 rounded-2xl"
             : "w-[900px] h-[580px] p-8 rounded-3xl mx-auto"
-        } ${listening ? "animate-borderGlow" : ""}`}
+        }`}
+        style={{
+          boxShadow: listening
+            ? `
+              0 0 ${20 + micIntensity * 60}px rgba(56,189,248,${micIntensity * 1.2}),
+              0 0 ${40 + micIntensity * 90}px rgba(232,121,249,${micIntensity * 1.1}),
+              0 0 ${80 + micIntensity * 120}px rgba(56,189,248,${micIntensity * 0.9})
+            `
+            : "none",
+          transition: "box-shadow 0.1s linear",
+        }}
       >
         {/* Header section */}
         <div className="flex flex-col items-center justify-center flex-none space-y-5">
@@ -138,13 +153,17 @@ export default function App() {
             onClick={() =>
               compactMode ? handleMoveCenter() : handleStartListening()
             }
-            className="bg-white/10 hover:bg-white/20 px-10 py-3 rounded-full text-lg font-medium transition duration-300 shadow-lg backdrop-blur-md animate-pulseGlow"
+            className={`px-10 py-3 rounded-full text-lg font-medium transition duration-300 shadow-lg backdrop-blur-md ${
+              listening
+                ? "bg-cyan-500/80 text-black font-semibold"
+                : "bg-white/10 hover:bg-white/20"
+            }`}
           >
             {compactMode
               ? "Exit"
               : listening
-              ? "Stop Listening"
-              : "Start Listening"}
+              ? "🟢 Listening..."
+              : "🎙️ Start Listening"}
           </button>
         </div>
 
@@ -167,7 +186,12 @@ export default function App() {
                   msg.sender === "user" ? "user-bubble" : "ai-bubble"
                 } ${compactMode ? "max-w-[90%]" : "max-w-[70%]"}`}
               >
-                {msg.text}
+                {/* ✅ Animate AI or user messages */}
+                {i === messages.length - 1 && msg.sender === "ai" ? (
+                  <Typewriter text={msg.text} speed={25} />
+                ) : (
+                  msg.text
+                )}
               </div>
             </div>
           ))}
@@ -203,9 +227,9 @@ export default function App() {
 }
 
 /* ===================================
-   🎧 Halo Visualizer (glow animation)
+   🎧 Real-time Halo Glow Visualizer
 =================================== */
-function MockHaloVisualizer() {
+function MockHaloGlow({ onIntensityChange }) {
   const [intensity, setIntensity] = useState(0.5);
   const analyserRef = useRef(null);
   const dataArrayRef = useRef(null);
@@ -242,7 +266,7 @@ function MockHaloVisualizer() {
           const rms = Math.sqrt(sum / dataArrayRef.current.length);
           const newIntensity = Math.min(1, rms / 30);
           setIntensity(newIntensity);
-
+          onIntensityChange(newIntensity); // 🔥 Pass intensity to parent glow
           animationRef.current = requestAnimationFrame(animate);
         };
         animate();
@@ -256,24 +280,7 @@ function MockHaloVisualizer() {
       cancelAnimationFrame(animationRef.current);
       if (audioContext) audioContext.close();
     };
-  }, []);
+  }, [onIntensityChange]);
 
-  return (
-    <div className="absolute inset-0 z-0 pointer-events-none">
-      <div
-        className="absolute inset-0 rounded-[40px]"
-        style={{
-          border: `2px solid transparent`,
-          borderImage: `linear-gradient(130deg, rgba(56,189,248,${intensity}), rgba(232,121,249,${intensity * 0.9}), rgba(56,189,248,${intensity})) 1`,
-          boxShadow: `
-            0 0 ${6 + intensity * 12}px rgba(56,189,248,${intensity * 0.5}),
-            0 0 ${10 + intensity * 18}px rgba(232,121,249,${intensity * 0.5})
-          `,
-          filter: "blur(8px)",
-          mixBlendMode: "screen",
-          transition: "box-shadow 0.15s linear",
-        }}
-      ></div>
-    </div>
-  );
+  return null; // No visible overlay needed — controls .glass-card glow
 }

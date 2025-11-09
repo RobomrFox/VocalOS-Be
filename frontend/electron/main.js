@@ -9,12 +9,25 @@ let win;
 const isDev = process.env.NODE_ENV === "development";
 
 /**
- * 🪟 Create the main VocalAI window
+ * 🪟 Create the main VocalAI window (centered by default)
  */
 function createWindow() {
+  const display = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = display.bounds; // ✅ use full screen bounds
+  const { x: displayX, y: displayY } = display.bounds; // offset in multi-monitor setups
+
+  const winWidth = 1000;
+  const winHeight = 700;
+
+  // ✅ Calculate perfect center considering monitor offsets
+  const x = Math.floor(displayX + (screenWidth - winWidth) / 2);
+  const y = Math.floor(displayY + (screenHeight - winHeight) / 2);
+
   win = new BrowserWindow({
-    width: 1000,
-    height: 700,
+    x,
+    y,
+    width: winWidth,
+    height: winHeight,
     frame: false,
     transparent: true,
     backgroundColor: "#00000000",
@@ -26,6 +39,10 @@ function createWindow() {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: false,
+      experimentalFeatures: true,
+      webSecurity: false,
+      devTools: true,
     },
   });
 
@@ -35,11 +52,17 @@ function createWindow() {
     win.loadFile(path.join(__dirname, "../dist/index.html"));
   }
 
-  console.log("✅ VocalAI window created");
+  console.log("✅ VocalAI window created and perfectly centered");
 
   win.on("resize", () => {
     const [width, height] = win.getSize();
     win.webContents.send("window-resized", { width, height });
+  });
+
+  // ✅ Ensure window comes to front & visible after load
+  win.once("ready-to-show", () => {
+    win.show();
+    win.focus();
   });
 }
 
