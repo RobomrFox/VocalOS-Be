@@ -19,28 +19,26 @@ import atexit
 import sys
 from dotenv import load_dotenv
 
+from stt import VoiceSignature
+
+from real_time_stt import AudioToTextRecorder
+
+
+
+load_dotenv()
+
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
-# --- Gemini API setup ---
-script_dir = os.path.dirname(os.path.realpath(__file__))
-dotenv_path = os.path.join(script_dir, ".env")
 
+stt = AudioToTextRecorder()
+vs = VoiceSignature()
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
 
-if os.path.exists(dotenv_path):
-    print(f"🧠 [main.py]: Loading environment variables from {dotenv_path}")
-    load_dotenv(dotenv_path)
-else:
-    print(f"🧠 [main.py]: ⚠️ WARNING: .env file not found at {dotenv_path}")
-    print("Please make sure your .env file is in the 'backend' directory.")
-
-api_key = os.getenv("GOOGLE_API_KEY")
-
-if not api_key:
-    print("❌ [main.py]: CRITICAL ERROR: 'GOOGLE_API_KEY' not found in .env file.")
-    sys.exit() # Exit if the key is missing
-
-genai.configure(api_key=api_key)
+# === Gemini API setup ===
+os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", "")
+genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 
 recognizer = sr.Recognizer()
@@ -231,19 +229,20 @@ def compose_email(to, subject, body):
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
+def get_open_windows():
+    system = platform.system().lower()
+    if system == "windows":
+        return [w.title for w in gw.getAllWindows() if w.title]
+    else:
+        # On macOS/Linux, cannot enumerate windows with pygetwindow
+        return []
 
 # === Ask Gemini for actions (PROMPT IS UPGRADED) ===
 def ask_gemini_for_action(user_text):
     """Ask Gemini to interpret the user's intent and return a safe structured action."""
-    
-    pw_page_title = call_playwright_service({"action": "get_title"})
-    open_windows = [w.title for w in gw.getAllWindows() if w.title]
-    context = (
-        f"Currently open windows: {open_windows[:5]}\n"
-        f"Active controlled browser page: {pw_page_title}"
-    )
-
-    # --- THIS IS THE UPGRADED PROMPT ---
+    open_windows = get_open_windows()
+    context = f"Currently open windows: {open_windows[:5]}"
+    # ✅ Escape all curly braces with double braces
     system_prompt = """
 You are VocalAI, a desktop AI assistant that translates user speech into JSON commands.
 You can control a web browser and local applications.
@@ -347,63 +346,64 @@ Context:
         return {"action": "none", "reply": text}
 
 
-# --- Flask Routes (Unchanged) ---
-
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
-    """🎙️ Voice input → Gemini reasoning → perform action safely."""
     try:
+        verify_voice = False
+        if request.is_json:
+            verify_voice = request.get_json().get("verify_voice", False)
+        else:
+            verify_voice = request.form.get("verify_voice", "false").lower() == "true"
+
+        global enrolled_embedding
+        if verify_voice:
+            if enrolled_embedding is None:
+                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
+            print("🎧 Verifying voice signature...")
+            verified = vs.verify(enrolled_embedding, duration=6)
+            if not verified:
+                return jsonify({"error": "Voice not recognized"}), 403
+        else:
+            print("Voice signature verification skipped (toggle off)")
+
+        print("🧠 Recording and transcribing...")
         with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
             recognizer.adjust_for_ambient_noise(source, duration=1)
             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-        print("🧠 [main.py]: Processing your voice...")
-        try:
-            user_text = recognizer.recognize_google(audio)
-            print(f"🗣️ You said: {user_text}")
-        except sr.UnknownValueError:
-            msg = "I couldn't understand what you said. Please try again."
-            return jsonify({"error": msg, "code": "stt_unknown", "can_retry": True}), 400
-        except sr.WaitTimeoutError:
-            msg = "I didn't hear anything. Try speaking again."
-            return jsonify({"error": msg, "code": "stt_timeout", "can_retry": True}), 408
-        except sr.RequestError as e:
-            msg = f"Speech recognition service failed: {e}"
-            return jsonify({"error": msg, "code": "stt_api_error", "can_retry": False}), 502
+
+        user_text = recognizer.recognize_google(audio)
+        print(f"🗣 You said: {user_text}")
 
         gemini_decision = ask_gemini_for_action(user_text)
-        action = str(gemini_decision.get("action", "none")).lower()
-        print(f"🧩 [main.py]: Parsed action: {action}")
+        action = gemini_decision.get("action", "none").lower()
+        target = gemini_decision.get("target", "")
 
-        # 1. Handle Local Actions
-        if action == "open_browser":
-            reply_text = open_browser(gemini_decision.get("target"))
-        elif action == "open_app":
-            reply_text = open_local_app(gemini_decision.get("target"))
-        elif action == "write_text":
-            reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
-        elif action == "compose_email":
-            reply_text = compose_email(gemini_decision.get("to"), gemini_decision.get("subject"), gemini_decision.get("body"))
-        
-        # 2. Handle Playwright Actions
-        elif action.startswith("playwright_"):
-            payload = gemini_decision.copy()
-            payload["action"] = action.replace("playwright_", "") # "playwright_goto" -> "goto"
-            reply_text = call_playwright_service(payload)
+        friendly_replies = {
+            "open_app": f"Opening {target} now.",
+            "open_browser": f"Opening browser to {target}.",
+            "write_text": f"Typing your message in {target}.",
+            "compose_email": "Composing email.",
+            "none": gemini_decision.get("reply", ""),
+        }
 
-        # 3. Handle Fallback
-        elif action == "none":
-            reply_text = gemini_decision.get("reply")
-        else:
-            reply_text = f"I understood the action '{action}' but wasn't sure what to do."
-        
-        print(f"✅ [main.py]: Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
+        reply = gemini_decision.get("reply", "")
+        if not reply.strip():
+            reply = friendly_replies.get(action, "[No reply from AI]")
 
-    except Exception as e:
-        print("❌ [main.py]: Full backend error:\n", traceback.format_exc())
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+        return jsonify({"text": user_text, "reply": reply})
 
+    except sr.UnknownValueError:
+        return jsonify({"error": "Could not understand audio."}), 400
+    except sr.WaitTimeoutError:
+        return jsonify({"error": "Listening timed out."}), 408
+    except sr.RequestError as e:
+        return jsonify({"error": f"API failed: {e}"}), 502
+    except Exception:
+        print(traceback.format_exc())
+        return jsonify({"error": "Internal server error occurred."}), 500
+
+
+# === Text-based route ===
 @app.route("/listen", methods=["POST"])
 def listen_text():
     """📝 Handle text messages directly"""
