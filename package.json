@@ -1,0 +1,13 @@
+{
+  "name": "vocalai",
+  "private": true,
+  "scripts": {
+    "dev-python": "cd backend && venv\\Scripts\\python.exe main.py",
+    "dev-react": "cd frontend && npm run dev",
+    "dev-electron": "cd electron && npm run dev",
+    "dev": "concurrently \"npm run dev-python\" \"npm run dev-react\" \"npm run dev-electron\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
