@@ -44,7 +44,7 @@ export default function App() {
   const handleExchange = async () => {
     if (turn === "user") {
       const userText = "Hey VocalAI, summarize my latest notes please.";
-      setMessages(prev => [...prev, { sender: "user", text: userText }]);
+      setMessages((prev) => [...prev, { sender: "user", text: userText }]);
       setTurn("ai");
 
       try {
@@ -54,10 +54,13 @@ export default function App() {
           body: JSON.stringify({ text: userText }),
         });
         const data = await res.json();
-        setMessages(prev => [...prev, { sender: "ai", text: data.reply }]);
+        setMessages((prev) => [...prev, { sender: "ai", text: data.reply }]);
       } catch (err) {
         console.error("❌ Backend error:", err);
-        setMessages(prev => [...prev, { sender: "ai", text: "⚠️ Couldn’t reach the backend." }]);
+        setMessages((prev) => [
+          ...prev,
+          { sender: "ai", text: "⚠️ Couldn’t reach the backend." },
+        ]);
       }
 
       setTurn("user");
@@ -65,54 +68,60 @@ export default function App() {
   };
 
   // 🎙️ Handle real Start Listening → send to Flask
-// 🎙️ Handle real Start Listening → send to Flask
-const handleStartListening = async () => {
-  const newState = !listening;
-  setListening(newState);
+  // 🎙️ Handle real Start Listening → send to Flask
+  const handleStartListening = async () => {
+    const newState = !listening;
+    setListening(newState);
 
-  if (newState) {
-    try {
-      const res = await fetch("http://127.0.0.1:5000/listen-voice", {
-        method: "POST",
-      });
+    if (newState) {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/listen-voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            verify_voice: shouldVerifyVoice, // shouldVerifyVoice is your frontend variable/toggle
+          }),
+        });
 
-      const data = await res.json();
+        const data = await res.json();
 
-      if (!res.ok) {
-        console.warn("🎧 STT error:", data);
-        let errorMsg = data.error || "⚠️ Voice recognition failed.";
+        if (!res.ok) {
+          console.warn("🎧 STT error:", data);
+          let errorMsg = data.error || "⚠️ Voice recognition failed.";
 
-        // Optional: customize by error code
-        if (data.code === "stt_unknown")
-          errorMsg = "😕 I couldn’t understand you. Please speak clearly.";
-        else if (data.code === "stt_timeout")
-          errorMsg = "⏱️ I didn’t hear anything. Try speaking again.";
-        else if (data.code === "stt_api_error")
-          errorMsg = "🌐 Speech service unavailable — check your network.";
+          // Optional: customize by error code
+          if (data.code === "stt_unknown")
+            errorMsg = "😕 I couldn’t understand you. Please speak clearly.";
+          else if (data.code === "stt_timeout")
+            errorMsg = "⏱️ I didn’t hear anything. Try speaking again.";
+          else if (data.code === "stt_api_error")
+            errorMsg = "🌐 Speech service unavailable — check your network.";
 
-        setMessages((prev) => [...prev, { sender: "ai", text: errorMsg }]);
+          setMessages((prev) => [...prev, { sender: "ai", text: errorMsg }]);
+          setListening(false);
+          return;
+        }
+
+        // ✅ Successful transcription + Gemini action
+        setMessages((prev) => [
+          ...prev,
+          { sender: "user", text: data.text },
+          { sender: "ai", text: data.reply },
+        ]);
+      } catch (err) {
+        console.error("🎧 Listening failed:", err);
+        setMessages((prev) => [
+          ...prev,
+          {
+            sender: "ai",
+            text: "⚠️ I couldn’t hear anything or the backend failed.",
+          },
+        ]);
+      } finally {
         setListening(false);
-        return;
       }
-
-      // ✅ Successful transcription + Gemini action
-      setMessages((prev) => [
-        ...prev,
-        { sender: "user", text: data.text },
-        { sender: "ai", text: data.reply },
-      ]);
-    } catch (err) {
-      console.error("🎧 Listening failed:", err);
-      setMessages((prev) => [
-        ...prev,
-        { sender: "ai", text: "⚠️ I couldn’t hear anything or the backend failed." },
-      ]);
-    } finally {
-      setListening(false);
     }
-  }
-};
-
+  };
 
   // 🪟 Move window to right side
   const handleMoveSide = () => {
@@ -140,7 +149,11 @@ const handleStartListening = async () => {
       {/* Glass Container */}
       <div
         className={`glass-card z-10 flex flex-col justify-between transition-all duration-700 ease-in-out
-          ${compactMode ? "w-full h-full px-5 py-4 rounded-2xl" : "w-[900px] h-[580px] p-8 rounded-3xl mx-auto"}
+          ${
+            compactMode
+              ? "w-full h-full px-5 py-4 rounded-2xl"
+              : "w-[900px] h-[580px] p-8 rounded-3xl mx-auto"
+          }
           ${listening ? "animate-borderGlow" : ""}
         `}
       >
@@ -154,10 +167,16 @@ const handleStartListening = async () => {
             VocalAI
           </h1>
           <button
-            onClick={() => (compactMode ? handleMoveCenter() : handleStartListening())}
+            onClick={() =>
+              compactMode ? handleMoveCenter() : handleStartListening()
+            }
             className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-full text-sm transition"
           >
-            {compactMode ? "Exit" : listening ? "Stop Listening" : "Start Listening"}
+            {compactMode
+              ? "Exit"
+              : listening
+              ? "Stop Listening"
+              : "Start Listening"}
           </button>
         </div>
 
@@ -171,7 +190,9 @@ const handleStartListening = async () => {
           {messages.map((msg, i) => (
             <div
               key={i}
-              className={`flex ${msg.sender === "user" ? "justify-start" : "justify-end"}`}
+              className={`flex ${
+                msg.sender === "user" ? "justify-start" : "justify-end"
+              }`}
             >
               <div
                 className={`message-bubble ${
@@ -218,7 +239,10 @@ function MockHaloVisualizer() {
   const [intensity, setIntensity] = useState(0.5);
 
   useEffect(() => {
-    const interval = setInterval(() => setIntensity(0.3 + Math.random() * 0.7), 400);
+    const interval = setInterval(
+      () => setIntensity(0.3 + Math.random() * 0.7),
+      400
+    );
     return () => clearInterval(interval);
   }, []);
 
@@ -228,7 +252,9 @@ function MockHaloVisualizer() {
         className="absolute inset-0 animate-haloEdge rounded-[40px]"
         style={{
           border: `3px solid transparent`,
-          borderImage: `linear-gradient(130deg, rgba(56,189,248,${intensity}), rgba(232,121,249,${intensity * 0.9}), rgba(56,189,248,${intensity})) 1`,
+          borderImage: `linear-gradient(130deg, rgba(56,189,248,${intensity}), rgba(232,121,249,${
+            intensity * 0.9
+          }), rgba(56,189,248,${intensity})) 1`,
           boxShadow: `
             0 0 ${40 + intensity * 90}px rgba(56,189,248,${intensity * 0.6}),
             0 0 ${60 + intensity * 120}px rgba(232,121,249,${intensity * 0.6})
@@ -240,7 +266,9 @@ function MockHaloVisualizer() {
       <div
         className="absolute inset-0 animate-haloPulse"
         style={{
-          background: `radial-gradient(circle at center, rgba(56,189,248,${intensity * 0.1}), rgba(232,121,249,${intensity * 0.05}), transparent 80%)`,
+          background: `radial-gradient(circle at center, rgba(56,189,248,${
+            intensity * 0.1
+          }), rgba(232,121,249,${intensity * 0.05}), transparent 80%)`,
           filter: "blur(120px)",
           opacity: 0.7,
         }}
