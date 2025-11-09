@@ -10,7 +10,7 @@ export default function App() {
   const [appLoaded, setAppLoaded] = useState(false);
   const chatRef = useRef(null);
   const [compactMode, setCompactMode] = useState(false);
-  const [micIntensity, setMicIntensity] = useState(0); // 🔊 RMS-driven glow strength
+  const [voiceSignatureEnabled, setVoiceSignatureEnabled] = useState(false);
 
   // ✅ Connection check with preload
   useEffect(() => {
@@ -30,14 +30,21 @@ export default function App() {
   }, []);
 
   // 🧭 Auto-scroll conversation
-  useEffect(() => {
-    if (chatRef.current) {
-      chatRef.current.scrollTo({
-        top: chatRef.current.scrollHeight,
+useEffect(() => {
+  if (chatRef.current) {
+    // Scroll only if user near bottom
+    const el = chatRef.current;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 50; // 50px margin
+
+    if (atBottom) {
+      el.scrollTo({
+        top: el.scrollHeight,
         behavior: "smooth",
       });
     }
-  }, [messages]);
+  }
+}, [messages]);
+
 
   // 🪄 Sync with Electron when listening
   useEffect(() => {
@@ -110,7 +117,7 @@ export default function App() {
   // 💬 Manual exchange for testing
   const handleExchange = async () => {
     if (turn === "user") {
-      const userText = "Hey Audient, summarize my latest notes please.";
+      const userText = "Hey VocalAI, summarize my latest notes please.";
       setMessages((prev) => [...prev, { sender: "user", text: userText }]);
       setTurn("ai");
 
@@ -122,7 +129,8 @@ export default function App() {
         });
         const data = await res.json();
         setMessages((prev) => [...prev, { sender: "ai", text: data.reply }]);
-      } catch {
+      } catch (err) {
+        console.error("❌ Backend error:", err);
         setMessages((prev) => [
           ...prev,
           { sender: "ai", text: "⚠️ Couldn’t reach the backend." },
@@ -133,49 +141,56 @@ export default function App() {
     }
   };
 
-  // 🎙️ Real listening
+  // 🎙️ Handle real Start Listening → send to Flask
+  // 🎙️ Handle real Start Listening → send to Flask
   const handleStartListening = async () => {
-    const newState = !listening;
-    setListening(newState);
+  const newState = !listening;
+  setListening(newState);
 
-    if (newState) {
-      try {
-        const res = await fetch("http://127.0.0.1:5000/listen-voice", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trigger: "listen" }),
-        });
+  if (newState) {
+    try {
+      const res = await fetch("http://127.0.0.1:5000/listen-voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verify_voice: voiceSignatureEnabled })
+      });
 
         const data = await res.json();
 
-        if (!res.ok) throw new Error(data.error || "Voice recognition failed.");
+      // Handle error cases
+      if (!res.ok) {
+        let errorMsg = data.error || "⚠️ Voice recognition failed.";
 
-        setMessages((prev) => [
-          ...prev,
-          { sender: "user", text: data.text },
-          { sender: "ai", text: data.reply },
-        ]);
+        if (res.status === 403)
+          errorMsg = "🔒 Voice did not match the enrolled profile!";
+        else if (data.code === "stt_unknown")
+          errorMsg = "😕 I couldn't understand you. Please speak clearly.";
+        else if (data.code === "stt_timeout")
+          errorMsg = "⏱️ I didn't hear anything. Try speaking again.";
+        else if (data.code === "stt_api_error")
+          errorMsg = "🌐 Speech service unavailable — check your network.";
 
-        // 🪄 Automatically move to side if Gemini triggered an app/browser
-        if (data.action === "open_browser" || data.action === "open_app" || data.action === "compose_email") {
-          console.log("🪟 Auto-docking window to side for external action...");
-          window.electron?.ipcRenderer?.send("move-window-side");
-          setCompactMode(true);
-        }
-
-      } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            sender: "ai",
-            text: "⚠️ I couldn’t hear anything or the backend failed.",
-          },
-        ]);
-      } finally {
+        // You can trigger an animation here before showing the message!
+        setMessages((prev) => [...prev, { sender: "ai", text: errorMsg }]);
         setListening(false);
+        return;
       }
+
+      setMessages((prev) => [
+        ...prev,
+        { sender: "user", text: data.text },
+        { sender: "ai", text: data.reply },
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { sender: "ai", text: "⚠️ I couldn't hear anything or the backend failed." },
+      ]);
+    } finally {
+      setListening(false);
     }
-  };
+  }
+};
 
   // 🪟 Move window
   const handleMoveSide = () => {
@@ -199,42 +214,43 @@ export default function App() {
 
       {/* 🪞 Glass Container with mic glow intensity */}
       <div
-        className={`glass-card relative z-10 flex flex-col transition-all duration-700 ease-in-out ${
-          compactMode
-            ? "w-full h-full px-5 py-4 rounded-2xl"
-            : "w-[900px] h-[580px] p-8 rounded-3xl mx-auto"
-        }`}
-        style={{
-          boxShadow: listening
-            ? `
-              0 0 ${20 + micIntensity * 60}px rgba(56,189,248,${micIntensity * 1.2}),
-              0 0 ${40 + micIntensity * 90}px rgba(232,121,249,${micIntensity * 1.1}),
-              0 0 ${80 + micIntensity * 120}px rgba(56,189,248,${micIntensity * 0.9})
-            `
-            : "none",
-          transition: "box-shadow 0.1s linear",
-        }}
+        className={`glass-card z-10 flex flex-col justify-between transition-all duration-700 ease-in-out
+          ${
+            compactMode
+              ? "w-full h-full px-5 py-4 rounded-2xl"
+              : "w-[900px] h-[580px] p-8 rounded-3xl mx-auto"
+          }
+          ${listening ? "animate-borderGlow" : ""}
+        `}
       >
-        {/* Header section */}
-        <div className="flex flex-col items-center justify-center flex-none space-y-5">
-          <h1 className="audient-gradient font-extrabold text-7xl tracking-wide select-none animate-float">
-            Audient
+        {/* Header */}
+        <div className="flex justify-between items-center mb-3">
+          <h1
+            className={`font-bold bg-gradient-to-r from-cyan-400 to-fuchsia-500 bg-clip-text text-transparent
+              ${compactMode ? "text-2xl" : "text-4xl"}
+            `}
+          >
+            VocalAI
           </h1>
           <button
             onClick={() =>
               compactMode ? handleMoveCenter() : handleStartListening()
             }
-            className={`px-10 py-3 rounded-full text-lg font-medium transition duration-300 shadow-lg backdrop-blur-md ${
-              listening
-                ? "bg-cyan-500/80 text-black font-semibold"
-                : "bg-white/10 hover:bg-white/20"
-            }`}
+            className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-full text-sm transition"
           >
             {compactMode
               ? "Exit"
               : listening
-              ? "🟢 Listening..."
-              : "🎙️ Start Listening"}
+              ? "Stop Listening"
+              : "Start Listening"}
+          </button>
+          <button
+            onClick={() => setVoiceSignatureEnabled(!voiceSignatureEnabled)}
+            className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-full text-sm transition"
+          >
+            {voiceSignatureEnabled
+              ? "🔒 Voice Signature: ON"
+              : "🔓 Voice Signature: OFF"}
           </button>
         </div>
 
@@ -249,8 +265,8 @@ export default function App() {
             <div
               key={i}
               className={`flex ${
-                msg.sender === "user" ? "justify-end" : "justify-start"
-              } animate-fadeIn`}
+                msg.sender === "user" ? "justify-start" : "justify-end"
+              }`}
             >
               <div
                 className={`message-bubble ${
@@ -307,51 +323,40 @@ function MockHaloGlow({ onIntensityChange }) {
   const animationRef = useRef(null);
 
   useEffect(() => {
-    let audioContext;
-    let source;
+    const interval = setInterval(
+      () => setIntensity(0.3 + Math.random() * 0.7),
+      400
+    );
+    return () => clearInterval(interval);
+  }, []);
 
-    async function setupMic() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        source = audioContext.createMediaStreamSource(stream);
-
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
-        analyserRef.current = analyser;
-        dataArrayRef.current = dataArray;
-        source.connect(analyser);
-
-        const animate = () => {
-          if (!analyserRef.current) return;
-          analyserRef.current.getByteTimeDomainData(dataArrayRef.current);
-
-          let sum = 0;
-          for (let i = 0; i < dataArrayRef.current.length; i++) {
-            const val = dataArrayRef.current[i] - 128;
-            sum += val * val;
-          }
-          const rms = Math.sqrt(sum / dataArrayRef.current.length);
-          const newIntensity = Math.min(1, rms / 30);
-          setIntensity(newIntensity);
-          onIntensityChange(newIntensity); // 🔥 Pass intensity to parent glow
-          animationRef.current = requestAnimationFrame(animate);
-        };
-        animate();
-      } catch (err) {
-        console.error("🎤 Mic setup failed:", err);
-      }
-    }
-
-    setupMic();
-    return () => {
-      cancelAnimationFrame(animationRef.current);
-      if (audioContext) audioContext.close();
-    };
-  }, [onIntensityChange]);
-
-  return null; // No visible overlay needed — controls .glass-card glow
+  return (
+    <div className="absolute inset-0 z-0 pointer-events-none">
+      <div
+        className="absolute inset-0 animate-haloEdge rounded-[40px]"
+        style={{
+          border: `3px solid transparent`,
+          borderImage: `linear-gradient(130deg, rgba(56,189,248,${intensity}), rgba(232,121,249,${
+            intensity * 0.9
+          }), rgba(56,189,248,${intensity})) 1`,
+          boxShadow: `
+            0 0 ${40 + intensity * 90}px rgba(56,189,248,${intensity * 0.6}),
+            0 0 ${60 + intensity * 120}px rgba(232,121,249,${intensity * 0.6})
+          `,
+          filter: "blur(15px)",
+          mixBlendMode: "screen",
+        }}
+      ></div>
+      <div
+        className="absolute inset-0 animate-haloPulse"
+        style={{
+          background: `radial-gradient(circle at center, rgba(56,189,248,${
+            intensity * 0.1
+          }), rgba(232,121,249,${intensity * 0.05}), transparent 80%)`,
+          filter: "blur(120px)",
+          opacity: 0.7,
+        }}
+      ></div>
+    </div>
+  );
 }

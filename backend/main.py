@@ -23,7 +23,10 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 from dotenv import load_dotenv
-
+import io
+import soundfile as sf
+import wave
+import numpy as np
 
 from stt import VoiceSignature
 
@@ -69,6 +72,22 @@ def open_browser(target):
         return f"Opening {target} in a new tab."
     except Exception as e:
         return f"❌ Failed to open browser: {e}"
+    
+
+def wav_to_numpy(wav_bytes):
+    with io.BytesIO(wav_bytes) as wav_io:
+        with wave.open(wav_io) as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            sample_width = wav_file.getsampwidth()
+            # Convert frames to numpy array based on sample width
+            if sample_width == 2:
+                dtype = np.int16
+            elif sample_width == 4:
+                dtype = np.int32
+            else:
+                dtype = np.uint8  # fallback
+            audio_np = np.frombuffer(frames, dtype=dtype)
+    return audio_np.astype(np.float32) / np.iinfo(dtype).max  # normalize to flo
 
 
 def open_local_app(app_name):
@@ -206,6 +225,13 @@ def get_open_windows():
     else:
         # On macOS/Linux, cannot enumerate windows with pygetwindow
         return []
+    
+
+def numpy_to_wav_bytes(audio_np, sample_rate=16000):
+    buf = io.BytesIO()
+    sf.write(buf, audio_np, sample_rate, format='WAV')
+    buf.seek(0)
+    return buf
 
 # === Ask Gemini for actions ===
 def ask_gemini_for_action(user_text):
@@ -279,20 +305,64 @@ def listen_voice():
             verify_voice = request.form.get("verify_voice", "false").lower() == "true"
 
         global enrolled_embedding
+
+        # -------- Voice Signature Enrollment Workflow ----------
         if verify_voice:
             if enrolled_embedding is None:
-                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
+                print("No enrolled voice found. Recording and enrolling now ...")
+                # Record for enrollment, save, inform frontend
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=1)
+                    print("Recording 8s for voice enrollment (speak normally)...")
+                    audio = recognizer.listen(source, timeout=8, phrase_time_limit=8)
+                try:
+                    wav = audio.get_wav_data()
+                    # Create embedding (implement: convert wav to np array for your vs.get_embedding)
+                    audio_np = wav_to_numpy(wav)  # Define this utility!
+                    enrolled_embedding = vs.get_embedding(audio_np)
+                    vs.save_embedding("default_user", enrolled_embedding)
+                    print("Enrollment completed.")
+                    return jsonify({
+                        "error": "No enrolled voice found. Enrolling now.",
+                        "enroll_required": True
+                    }), 200
+                except Exception as e:
+                    print("Enrollment failed:", e)
+                    return jsonify({"error": "Voice enrollment failed.", "details": str(e)}), 500
+
             print("🎧 Verifying voice signature...")
-            verified = vs.verify(enrolled_embedding, duration=6)
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=1)
+                audio = recognizer.listen(source, timeout=6, phrase_time_limit=6)
+            wav = audio.get_wav_data()
+            audio_np = wav_to_numpy(wav)  # Define or use your normal audio conversion pipeline
+            verified = vs.verify(enrolled_embedding, audio_np)
             if not verified:
                 return jsonify({"error": "Voice not recognized"}), 403
         else:
             print("Voice signature verification skipped (toggle off)")
 
-        print("🧠 Recording and transcribing...")
+        # ---------- Fast "batch" Transcription ----------
+        print("Recording and transcribing...")
         with sr.Microphone() as source:
             recognizer.adjust_for_ambient_noise(source, duration=1)
             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+        print("Processing your voice ...")
+        try:
+            user_text = recognizer.recognize_google(audio)
+            print(f"You said: {user_text}")
+        except sr.UnknownValueError:
+            print("Could not understand audio (speech unintelligible).")
+            return jsonify({
+                "error": "Sorry, I couldn’t understand what you said. Please try again."
+            }), 400
+        except sr.RequestError as e:
+            print(f"Speech recognition service error: {e}")
+            return jsonify({
+                "error": "Speech recognition service unavailable. Check your internet connection."
+            }), 503
+
+        # ----- Gemini/Action logic like before -----
 
         print("🧠 Processing your voice...")
 
@@ -315,6 +385,20 @@ def listen_voice():
         action = str(gemini_decision.get("action", "none")).lower()
         target = gemini_decision.get("target", "")
         reply = gemini_decision.get("reply", "")
+
+        # Map action to reply if none
+        if not reply or not reply.strip():
+            if action and target:
+                reply = f"Action: {action} - {target}"
+            else:
+                reply = "[No reply from AI]"
+
+        print(f"Reply: {reply}")
+        return jsonify({"text": user_text, "reply": reply, "action": action})
+
+    except Exception as e:
+        print("Full backend error:\n", traceback.format_exc())
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
         content = gemini_decision.get("content", "")
         to = gemini_decision.get("to", "")
         subject = gemini_decision.get("subject", "")
