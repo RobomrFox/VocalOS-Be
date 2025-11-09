@@ -16,7 +16,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # === Gemini API setup ===
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBqVYWth6gOopleZ-hDI3in0I_dB_BZFto"
+os.environ["GOOGLE_API_KEY"] = "AIzaSyBgoVKMZA9VU9vWXFc8Ev-4kzkgMKoVYjw"
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 
@@ -158,7 +158,6 @@ def compose_email(to, subject, body):
         system = platform.system().lower()
         if system == "windows":
             chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-            edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 
             if os.path.exists(chrome_path):
                 subprocess.Popen([chrome_path, gmail_url])
