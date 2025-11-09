@@ -11,12 +11,15 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # === Gemini API setup ===
-os.environ["GOOGLE_API_KEY"] = "AIzaSyBqVYWth6gOopleZ-hDI3in0I_dB_BZFto"
+os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", "")
 genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
 
