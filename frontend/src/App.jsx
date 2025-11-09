@@ -44,6 +44,69 @@ export default function App() {
     window.electron?.ipcRenderer?.send("set-listening-mode", listening);
   }, [listening]);
 
+    // 🎤 Passive wake-word listener (poll backend every few seconds)
+  useEffect(() => {
+    let interval;
+
+    async function checkWakeword() {
+      try {
+        const res = await fetch("http://127.0.0.1:5000/wakeword", { method: "POST" });
+        const data = await res.json();
+
+        if (data.wakeword_detected) {
+          console.log("👂 Wake-word detected:", data.text);
+
+          // 🌈 Show instant listening glow
+          setListening(true);
+          setMessages(prev => [
+            ...prev,
+            { sender: "user", text: `🎤 (${data.text})` },
+          ]);
+
+          // 🧠 Trigger actual voice recognition
+          const listenRes = await fetch("http://127.0.0.1:5000/listen-voice", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ trigger: "wake" }),
+          });
+
+          const result = await listenRes.json();
+          if (listenRes.ok) {
+            setMessages(prev => [
+              ...prev,
+              { sender: "user", text: result.text },
+              { sender: "ai", text: result.reply },
+            ]);
+
+            // 🪄 Auto-dock if Gemini opened something
+            if (
+              result.action === "open_browser" ||
+              result.action === "open_app" ||
+              result.action === "compose_email"
+            ) {
+              window.electron?.ipcRenderer?.send("move-window-side");
+              setCompactMode(true);
+            }
+          } else {
+            setMessages(prev => [
+              ...prev,
+              { sender: "ai", text: result.error || "Wake-word listening failed." },
+            ]);
+          }
+
+          setListening(false);
+        }
+      } catch (err) {
+        console.error("⚠️ Wake-word polling failed:", err);
+      }
+    }
+
+    // 🕒 check every 5 seconds
+    interval = setInterval(checkWakeword, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+
   // 💬 Manual exchange for testing
   const handleExchange = async () => {
     if (turn === "user") {
@@ -212,21 +275,21 @@ export default function App() {
               compactMode ? "justify-center gap-3" : "justify-between"
             }`}
           >
-            <button
+            {/* <button
               onClick={handleExchange}
               className="bg-gradient-to-r from-cyan-400 to-fuchsia-500 text-black font-semibold px-5 py-2 rounded-full hover:opacity-90 transition"
             >
               Exchange
-            </button>
+            </button> */}
 
-            {!compactMode && (
+            {/* {!compactMode && (
               <button
                 onClick={handleMoveSide}
                 className="bg-white/10 hover:bg-white/20 px-4 py-2 rounded-full text-sm transition"
               >
                 🪟 Move to Side
               </button>
-            )}
+            )} */}
           </div>
         )}
       </div>
