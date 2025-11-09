@@ -183,13 +183,19 @@ def compose_email(to, subject, body):
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
+def get_open_windows():
+    system = platform.system().lower()
+    if system == "windows":
+        return [w.title for w in gw.getAllWindows() if w.title]
+    else:
+        # On macOS/Linux, cannot enumerate windows with pygetwindow
+        return []
 
 # === Ask Gemini for actions ===
 def ask_gemini_for_action(user_text):
     """Ask Gemini to interpret the user's intent and return a safe structured action."""
-    open_windows = [w.title for w in gw.getAllWindows() if w.title]
+    open_windows = get_open_windows()
     context = f"Currently open windows: {open_windows[:5]}"
-
     # ✅ Escape all curly braces with double braces
     system_prompt = """
 You are VocalAI, a desktop AI assistant that can perform user commands.
