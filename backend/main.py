@@ -307,18 +307,17 @@ def listen_voice():
         global enrolled_embedding
 
         # -------- Voice Signature Enrollment Workflow ----------
+        # -------- Voice Signature Enrollment Workflow ----------
         if verify_voice:
             if enrolled_embedding is None:
-                print("No enrolled voice found. Recording and enrolling now ...")
-                # Record for enrollment, save, inform frontend
+                print("No enrolled voice found. Recording and enrolling now...")
                 with sr.Microphone() as source:
                     recognizer.adjust_for_ambient_noise(source, duration=1)
                     print("Recording 8s for voice enrollment (speak normally)...")
                     audio = recognizer.listen(source, timeout=8, phrase_time_limit=8)
                 try:
                     wav = audio.get_wav_data()
-                    # Create embedding (implement: convert wav to np array for your vs.get_embedding)
-                    audio_np = wav_to_numpy(wav)  # Define this utility!
+                    audio_np = wav_to_numpy(wav)
                     enrolled_embedding = vs.get_embedding(audio_np)
                     vs.save_embedding("default_user", enrolled_embedding)
                     print("Enrollment completed.")
@@ -330,37 +329,48 @@ def listen_voice():
                     print("Enrollment failed:", e)
                     return jsonify({"error": "Voice enrollment failed.", "details": str(e)}), 500
 
-            print("🎧 Verifying voice signature...")
+            # Record ONCE for both verification and transcription
+            print("🎧 Recording for verification and transcription...")
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=1)
-                audio = recognizer.listen(source, timeout=6, phrase_time_limit=6)
+                recognizer.pause_threshold = 0.7
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
+            
+            # Verify first
             wav = audio.get_wav_data()
-            audio_np = wav_to_numpy(wav)  # Define or use your normal audio conversion pipeline
+            audio_np = wav_to_numpy(wav)
             verified = vs.verify(enrolled_embedding, audio_np)
             if not verified:
                 return jsonify({"error": "Voice not recognized"}), 403
+            print("✅ Voice verified!")
         else:
             print("Voice signature verification skipped (toggle off)")
+            # Record for transcription only
+            print("Recording and transcribing...")
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=1)
+                recognizer.pause_threshold = 0.7
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
 
-        # ---------- Fast "batch" Transcription ----------
-        print("Recording and transcribing...")
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-        print("Processing your voice ...")
+        # ---------- Transcription (uses `audio` from above) ----------
+        print("Processing your voice...")
         try:
             user_text = recognizer.recognize_google(audio)
             print(f"You said: {user_text}")
         except sr.UnknownValueError:
             print("Could not understand audio (speech unintelligible).")
             return jsonify({
-                "error": "Sorry, I couldn’t understand what you said. Please try again."
+                "error": "Sorry, I couldn't understand what you said. Please try again."
             }), 400
         except sr.RequestError as e:
             print(f"Speech recognition service error: {e}")
             return jsonify({
                 "error": "Speech recognition service unavailable. Check your internet connection."
             }), 503
+
+        # ----- Gemini/Action logic -----
+        # ... rest of your code ...
+
 
         # ----- Gemini/Action logic like before -----
 
