@@ -33,9 +33,9 @@ if os.path.exists(dotenv_path):
 else:
     print(f"🧠 [main.py]: ⚠️ WARNING: .env file not found at {dotenv_path}")
 
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    print("❌ [main.py]: CRITICAL ERROR: 'GOOGLE_API_KEY' not found in .env file.")
+    print("❌ [main.py]: CRITICAL ERROR: 'GEMINI_API_KEY' not found in .env file.")
     sys.exit()
 
 genai.configure(api_key=api_key)
