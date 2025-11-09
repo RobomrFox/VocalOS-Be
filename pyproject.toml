@@ -5,8 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "dotenv>=0.9.9",
     "faster-whisper>=1.2.1",
+    "flask>=3.1.2",
+    "flask-cors>=6.0.1",
     "flet>=0.28.3",
+    "google-generativeai>=0.8.5",
     "loguru>=0.7.3",
     "mss>=10.1.0",
     "numpy>=2.3.4",
@@ -17,10 +21,13 @@ dependencies = [
     "pyautogui>=0.9.54",
     "realtimestt>=0.1.7",
     "requests>=2.32.5",
+    "resemblyzer>=0.1.4",
     "rich>=14.2.0",
     "silero-vad>=6.2.0",
     "sounddevice>=0.5.3",
     "soundfile>=0.13.1",
+    "speechrecognition>=3.14.3",
     "torch>=2.9.0",
     "torchaudio>=2.9.0",
+    "uvicorn>=0.38.0",
 ]
