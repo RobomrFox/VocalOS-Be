@@ -13,10 +13,22 @@ import pygetwindow as gw
 import traceback
 from dotenv import load_dotenv
 
+from stt import VoiceSignature
+
+from real_time_stt import AudioToTextRecorder
+
+
+
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+
+stt = AudioToTextRecorder()
+vs = VoiceSignature()
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
 
 # === Gemini API setup ===
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY", "")
@@ -245,93 +257,61 @@ Context:
         return {"action": "none", "reply": text}
 
 
-
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
-    """🎙️ Voice input → Gemini reasoning → perform action safely."""
     try:
+        verify_voice = False
+        if request.is_json:
+            verify_voice = request.get_json().get("verify_voice", False)
+        else:
+            verify_voice = request.form.get("verify_voice", "false").lower() == "true"
+
+        global enrolled_embedding
+        if verify_voice:
+            if enrolled_embedding is None:
+                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
+            print("🎧 Verifying voice signature...")
+            verified = vs.verify(enrolled_embedding, duration=6)
+            if not verified:
+                return jsonify({"error": "Voice not recognized"}), 403
+        else:
+            print("Voice signature verification skipped (toggle off)")
+
+        print("🧠 Recording and transcribing...")
         with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
             recognizer.adjust_for_ambient_noise(source, duration=1)
             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
-        print("🧠 Processing your voice...")
+        user_text = recognizer.recognize_google(audio)
+        print(f"🗣 You said: {user_text}")
 
-        try:
-            # 👉 This is the line that was crashing before
-            user_text = recognizer.recognize_google(audio)
-            print(f"🗣️ You said: {user_text}")
-        except sr.UnknownValueError:
-            # Could not understand the audio
-            msg = "I couldn't understand what you said. Please try again and speak clearly."
-            print("❌ STT UnknownValueError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_unknown",
-                "can_retry": True
-            }), 400
-        except sr.WaitTimeoutError:
-            msg = "I didn't hear anything. Try speaking again."
-            print("⏱️ STT WaitTimeoutError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_timeout",
-                "can_retry": True
-            }), 408
-        except sr.RequestError as e:
-            # Network/API issue with Google STT
-            msg = f"Speech recognition service failed: {e}"
-            print("🌐 STT RequestError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_api_error",
-                "can_retry": False
-            }), 502
-
-        # 🧠 Ask Gemini what to do with the recognized text
         gemini_decision = ask_gemini_for_action(user_text)
-        print(f"🔍 Raw Gemini decision type: {type(gemini_decision)}")
+        action = gemini_decision.get("action", "none").lower()
+        target = gemini_decision.get("target", "")
 
-        # Ensure safe dict structure
-        if not isinstance(gemini_decision, dict):
-            try:
-                gemini_decision = json.loads(str(gemini_decision))
-            except Exception:
-                gemini_decision = {"action": "none", "reply": str(gemini_decision)}
+        friendly_replies = {
+            "open_app": f"Opening {target} now.",
+            "open_browser": f"Opening browser to {target}.",
+            "write_text": f"Typing your message in {target}.",
+            "compose_email": "Composing email.",
+            "none": gemini_decision.get("reply", ""),
+        }
 
-        # Extract safely
-        action = str(gemini_decision.get("action", "none")).lower()
-        target = gemini_decision.get("target") or ""
-        reply = gemini_decision.get("reply") or ""
-        content = gemini_decision.get("content") or ""
-        to = gemini_decision.get("to") or ""
-        subject = gemini_decision.get("subject") or ""
-        body = gemini_decision.get("body") or ""
+        reply = gemini_decision.get("reply", "")
+        if not reply.strip():
+            reply = friendly_replies.get(action, "[No reply from AI]")
 
-        print(f"🧩 Parsed action: {action}")
+        return jsonify({"text": user_text, "reply": reply})
 
-        # Execute action
-        if action == "open_browser" and target:
-            reply_text = open_browser(target)
-        elif action == "open_app" and target:
-            reply_text = open_local_app(target)
-        elif action == "write_text" and target and content:
-            reply_text = write_to_app(target, content)
-        elif action == "compose_email":
-            reply_text = compose_email(to, subject, body)
-        elif action == "none" and reply:
-            reply_text = reply
-        else:
-            reply_text = "I'm not sure what to do yet."
-
-        print(f"✅ Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
-
-    except Exception as e:
-        # 🔥 Log full traceback for debugging
-        print("❌ Full backend error:\n", traceback.format_exc())
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
+    except sr.UnknownValueError:
+        return jsonify({"error": "Could not understand audio."}), 400
+    except sr.WaitTimeoutError:
+        return jsonify({"error": "Listening timed out."}), 408
+    except sr.RequestError as e:
+        return jsonify({"error": f"API failed: {e}"}), 502
+    except Exception:
+        print(traceback.format_exc())
+        return jsonify({"error": "Internal server error occurred."}), 500
 
 
 # === Text-based route ===

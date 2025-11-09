@@ -1486,6 +1486,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pydub"
+version = "0.25.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/9a/e6bca0eed82db26562c73b5076539a4a08d3cffd19c3cc5913a3e61145fd/pydub-0.25.1.tar.gz", hash = "sha256:980a33ce9949cab2a569606b65674d748ecbca4f0796887fd6f46173a7b0d30f", size = 38326, upload-time = "2021-03-10T02:09:54.659Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/53/d78dc063216e62fc55f6b2eebb447f6a4b0a59f55c8406376f76bf959b08/pydub-0.25.1-py2.py3-none-any.whl", hash = "sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6", size = 32327, upload-time = "2021-03-10T02:09:53.503Z" },
+]
+
+[[package]]
 name = "pygetwindow"
 version = "0.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -2331,6 +2340,7 @@ dependencies = [
     { name = "flask-cors" },
     { name = "flet" },
     { name = "google-generativeai" },
+    { name = "librosa" },
     { name = "loguru" },
     { name = "mss" },
     { name = "numpy" },
@@ -2339,6 +2349,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pyaudio" },
     { name = "pyautogui" },
+    { name = "pydub" },
     { name = "realtimestt" },
     { name = "requests" },
     { name = "resemblyzer" },
@@ -2360,6 +2371,7 @@ requires-dist = [
     { name = "flask-cors", specifier = ">=6.0.1" },
     { name = "flet", specifier = ">=0.28.3" },
     { name = "google-generativeai", specifier = ">=0.8.5" },
+    { name = "librosa", specifier = ">=0.11.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mss", specifier = ">=10.1.0" },
     { name = "numpy", specifier = ">=2.3.4" },
@@ -2368,6 +2380,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.0.0" },
     { name = "pyaudio", specifier = ">=0.2.14" },
     { name = "pyautogui", specifier = ">=0.9.54" },
+    { name = "pydub", specifier = ">=0.25.1" },
     { name = "realtimestt", specifier = ">=0.1.7" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "resemblyzer", specifier = ">=0.1.4" },
