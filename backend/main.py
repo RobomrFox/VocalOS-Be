@@ -11,6 +11,9 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)

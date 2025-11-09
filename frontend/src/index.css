@@ -68,9 +68,22 @@ h1 {
   font-size: 3rem;
   line-height: 1.1;
   font-weight: 700;
-  background: linear-gradient(90deg, #00ffff, #ff00ff);
+}
+
+/* Exact Audient gradient */
+.audient-gradient {
+  background: linear-gradient(
+    90deg,
+    #00e0ff,
+    #3b82ff,
+    #7b5dff,
+    #ff00ff
+  );
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+  animation: float 4s ease-in-out infinite;
 }
 
 /* ================================
@@ -78,14 +91,9 @@ h1 {
 ================================ */
 .glass-card {
   position: relative;
-
-  /* 🔒 Fixed “design” size, but never bigger than window - 40px margin */
   width: min(780px, calc(100vw - 40px));
   height: min(500px, calc(100vh - 40px));
-
   flex-shrink: 0;
-  flex-grow: 0;
-
   background: rgba(25, 30, 50, 0.55);
   border-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.25);
@@ -96,12 +104,11 @@ h1 {
   justify-content: flex-start;
   align-items: stretch;
   padding: 1.5rem 2rem;
-  overflow: hidden; /* ✅ card never grows with more messages */
-  transition: none !important;
   box-shadow:
     0 0 25px rgba(56, 189, 248, 0.35),
     0 0 45px rgba(232, 121, 249, 0.25),
     inset 0 0 15px rgba(255, 255, 255, 0.05);
+  overflow: hidden;
 }
 
 /* If you still add .expanded / .listening from React,
@@ -148,8 +155,7 @@ h1 {
 ================================ */
 .conversation {
   flex: 1 1 auto;
-  min-height: 0;           /* important for flexbox scrolling */
-  width: 100%;
+  min-height: 0;             /* crucial for flexbox scrolling */
   overflow-y: auto;
   overflow-x: hidden;
   padding: 1rem;
@@ -161,7 +167,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-/* Subtle top fade */
+/* Optional fade at top for visual polish */
 .conversation::before {
   content: "";
   position: sticky;
@@ -175,7 +181,6 @@ h1 {
   z-index: 5;
   pointer-events: none;
 }
-
 /* Scrollbar styling */
 .conversation::-webkit-scrollbar {
   width: 6px;
@@ -267,5 +272,70 @@ h1 {
   .message-bubble {
     font-size: 0.9rem;
     max-width: 90%;
+  }
+}
+/* App fade-in & scale */
+@keyframes appEnter {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.app-enter {
+  animation: appEnter 0.9s ease-out forwards;
+}
+
+/* Smooth text fade-up */
+@keyframes fadeSlideUp {
+  0% {
+    opacity: 0;
+    transform: translateY(15px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Floating shimmer on title */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+    filter: brightness(1);
+  }
+  50% {
+    transform: translateY(-5px);
+    filter: brightness(1.2);
+  }
+}
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+/* Subtle pulse on listen button */
+@keyframes pulseGlow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(56,189,248,0.25), 0 0 15px rgba(232,121,249,0.2);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(56,189,248,0.45), 0 0 25px rgba(232,121,249,0.35);
+  }
+}
+.animate-pulseGlow {
+  animation: pulseGlow 3.5s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0);
+    filter: brightness(1);
+  }
+  50% {
+    transform: translateY(-6px);
+    filter: brightness(1.15);
   }
 }
