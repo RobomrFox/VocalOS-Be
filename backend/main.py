@@ -13,7 +13,9 @@ import os
 import subprocess
 import platform
 import webbrowser
+import requests
 import json
+import atexit
 import pyautogui
 import pygetwindow as gw
 import traceback
@@ -27,18 +29,19 @@ import io
 import soundfile as sf
 import wave
 import numpy as np
-
+from prompt import get_system_prompt
 from stt import VoiceSignature
-
 from real_time_stt import AudioToTextRecorder
 
-
-
 load_dotenv()
-from prompt import get_system_prompt  # <-- NEW IMPORT
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+stt = AudioToTextRecorder()
+vs = VoiceSignature()
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
 
 # --- Gemini API setup ---
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -56,7 +59,7 @@ if not api_key:
     sys.exit()
 
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-2.0-flash")
+model = genai.GenerativeModel("gemini-2.5-pro")
 
 recognizer = sr.Recognizer()
 
@@ -386,83 +389,86 @@ def listen_voice():
             verify_voice = request.form.get("verify_voice", "false").lower() == "true"
 
         global enrolled_embedding
+
+        # -------- Voice Signature Enrollment Workflow ----------
+        # -------- Voice Signature Enrollment Workflow ----------
         if verify_voice:
             if enrolled_embedding is None:
-                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
-            print("🎧 Verifying voice signature...")
-            verified = vs.verify(enrolled_embedding, duration=6)
-            if not verified:
-                return jsonify({"error": "Voice not recognized"}), 403
-        else:
-            print("Voice signature verification skipped (toggle off)")
+                print("No enrolled voice found. Recording and enrolling now...")
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=1)
+                    print("Recording 8s for voice enrollment (speak normally)...")
+                    audio = recognizer.listen(source, timeout=8, phrase_time_limit=8)
 
-        print("🧠 Recording and transcribing...")
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+                try:
+                                wav = audio.get_wav_data()
+                                audio_np = wav_to_numpy(wav)
+                                enrolled_embedding = vs.get_embedding(audio_np)
+                                vs.save_embedding("default_user", enrolled_embedding)
+                                print("Enrollment completed.")
+                                return jsonify({
+                                    "error": "No enrolled voice found. Enrolling now.",
+                                    "enroll_required": True
+                                }), 200
+                except Exception as e:
+                    print("Enrollment failed:", e)
+                    return jsonify({"error": "Voice enrollment failed.", "details": str(e)}), 500
 
-        user_text = recognizer.recognize_google(audio)
-        print(f"🗣 You said: {user_text}")
+                # Record ONCE for both verification and transcription
+                print("🎧 Recording for verification and transcription...")
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=1)
+                    recognizer.pause_threshold = 0.7
+                    audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
 
-        gemini_decision = ask_gemini_for_action(user_text)
-        action = str(gemini_decision.get("action", "none")).lower()
-        print(f"🧩 [main.py]: Parsed action: {action}")
-
-        if action == "open_browser":
-            reply_text = open_browser(gemini_decision.get("target"))
-        elif action == "open_app":
-            reply_text = open_local_app(gemini_decision.get("target"))
-        elif action == "write_text":
-            reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
-        
-        elif action == "email_start_professor":
-            name = gemini_decision.get("name").lower()
-            email = PROFESSOR_DB.get(name)
-            if email:
-                email_draft_session = {"to": email, "to_name": name.title(), "subject": "", "body_content": ""}
-                reply_text = compose_email_and_refresh()
+                wav = audio.get_wav_data()
+                audio_np = wav_to_numpy(wav)
+                verified = vs.verify(enrolled_embedding, audio_np)
+                if not verified:
+                    return jsonify({"error": "Voice not recognized"}), 403
+                print("✅ Voice verified!")
             else:
-                reply_text = f"I don't have a professor named '{name}' in my database."
-        
-        elif action == "email_start_generic":
-            email = gemini_decision.get("to")
-            email_draft_session = {"to": email, "to_name": email.split('@')[0], "subject": "", "body_content": ""}
-            reply_text = compose_email_and_refresh()
+                print("Voice signature verification skipped (toggle off)")
+                # Record for transcription only
+                print("Recording and transcribing...")
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=1)
+                    recognizer.pause_threshold = 0.7
+                    audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
 
-        elif action == "email_set_title":
-            email_draft_session["subject"] = gemini_decision.get("title")
-            reply_text = compose_email_and_refresh()
-        
-        elif action == "email_set_content":
-            email_draft_session["body_content"] = gemini_decision.get("content")
-            reply_text = compose_email_and_refresh()
+            print("Processing your voice...")
+            try:
+                user_text = recognizer.recognize_google(audio)
+                print(f"You said: {user_text}")
+            except sr.UnknownValueError:
+                print("Could not understand audio (speech unintelligible).")
+                return jsonify({
+                    "error": "Sorry, I couldn't understand what you said. Please try again."
+                }), 400
+            except sr.RequestError as e:
+                print(f"Speech recognition service error: {e}")
+                return jsonify({
+                    "error": "Speech recognition service unavailable. Check your internet connection."
+                }), 503
+            
+            gemini_decision = ask_gemini_for_action(user_text)
+            action = str(gemini_decision.get("action", "none")).lower()
+            target = gemini_decision.get("target", "")
+            reply = gemini_decision.get("reply", "")
 
-        elif action == "email_clear_title":
-            email_draft_session["subject"] = ""
-            reply_text = compose_email_and_refresh()
-        
-        elif action == "email_clear_content":
-            email_draft_session["body_content"] = ""
-            reply_text = compose_email_and_refresh()
-        
-        elif action.startswith("playwright_"):
-            payload = gemini_decision.copy()
-            payload["action"] = action.replace("playwright_", "")
-            reply_text = call_playwright_service(payload)
+            # Map action to reply if none
+            if not reply or not reply.strip():
+                if action and target:
+                    reply = f"Action: {action} - {target}"
+                else:
+                    reply = "[No reply from AI]"
 
-        elif action == "none":
-            reply_text = gemini_decision.get("reply")
-        else:
-            reply_text = f"I understood the action '{action}' but wasn't sure what to do."
-        
-        print(f"✅ [main.py]: Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
+            print(f"Reply: {reply}")
+            return jsonify({"text": user_text, "reply": reply, "action": action})
 
     except Exception as e:
-        print("❌ [main.py]: Full backend error:\n", traceback.format_exc())
+        print("Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
-
 # ==============================================================
 # 💬 Text Command Route
 # ==============================================================
@@ -499,7 +505,7 @@ def listen_text():
         reply_text = write_to_app(target, content)
     # 🚨 ADD THIS BLOCK:
     elif action == "compose_email":
-        reply_text = compose_email(to, subject, body)
+        reply_text = compose_email_and_refresh(to, subject, body)
     action = str(gemini_decision.get("action", "none")).lower()
 
     if action == "open_browser":
