@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, request
 from flask_cors import CORS
 import speech_recognition as sr
+import numpy as np
 import time
 import google.generativeai as genai
 import os
@@ -11,7 +12,20 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
+import pickle
 from dotenv import load_dotenv
+import librosa 
+
+from resemblyzer import VoiceEncoder, preprocess_wav
+
+encoder = VoiceEncoder()
+
+def get_embedding_from_audio_np(audio_np, sample_rate=16000):
+    # Resemblyzer expects wav float32, typically sample rate 16k
+    # Convert int16 numpy to float32 in range [-1, 1]
+    wav = audio_np.astype(np.float32) / np.iinfo(np.int16).max
+    return encoder.embed_utterance(wav)
+
 
 load_dotenv()
 
@@ -30,20 +44,28 @@ recognizer = sr.Recognizer()
 #speech recognition setup 
 
 
-@app.route("/listen-voice", methods=["POST"])
-def listen_voice():
-    try:
-        with sr.Microphone() as source:
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-        user_text = recognizer.recognize_google(audio)
-        return jsonify({"text": user_text, "reply": f"Received: {user_text}"})
-    except sr.UnknownValueError:
-        return jsonify({"error": "Could not understand audio."}), 400
-    except sr.WaitTimeoutError:
-        return jsonify({"error": "Listening timed out."}), 408
-    except sr.RequestError as e:
-        return jsonify({"error": f"API request failed: {e}"}), 502
+def generate_embedding_from_audio_file(file_path):
+    audio_np, _ = librosa.load(file_path, sr=16000)
+    return get_embedding_from_audio_np(audio_np)
+
+enrollment_embedding_path = "enrolled_embedding.pkl"
+enrolled_embedding = None
+
+if os.path.exists(enrollment_embedding_path):
+    # Load existing enrollment embedding from disk
+    with open(enrollment_embedding_path, "rb") as f:
+        enrolled_embedding = pickle.load(f)
+else:
+    # enrollment.wav might not exist if user didn't enroll yet, so check first
+    if os.path.exists("enrollment.wav"):
+        enrolled_embedding = generate_embedding_from_audio_file("enrollment.wav")
+        with open(enrollment_embedding_path, "wb") as f:
+            pickle.dump(enrolled_embedding, f)
+    else:
+        # No enrollment file and no saved embedding found
+        enrolled_embedding = None
+
+
 
 # === Helper functions ===
 
@@ -264,94 +286,86 @@ Context:
         # Final fallback
         return {"action": "none", "reply": text}
 
+# @app.route("/voice-signature", methods=["POST"])
+# def listen_voice():
+#     try:
+#         with sr.Microphone() as source:
+#             recognizer.adjust_for_ambient_noise(source, duration=1)
+#             audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+#         user_text = recognizer.recognize_google(audio)
+#         return jsonify({"text": user_text, "reply": f"Received: {user_text}"})
+#     except sr.UnknownValueError:
+#         return jsonify({"error": "Could not understand audio."}), 400
+#     except sr.WaitTimeoutError:
+#         return jsonify({"error": "Listening timed out."}), 408
+#     except sr.RequestError as e:
+#         return jsonify({"error": f"API request failed: {e}"}), 502
+    
+
+def is_speaker(audio_np, reference_embedding, threshold=0.65):
+    test_embedding = get_embedding_from_audio_np(audio_np)
+    similarity = np.dot(reference_embedding, test_embedding) / (
+        np.linalg.norm(reference_embedding) * np.linalg.norm(test_embedding))
+    return similarity > threshold
 
 
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
-    """🎙️ Voice input → Gemini reasoning → perform action safely."""
     try:
-        with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+        data = request.form or {}
+        verify_voice = data.get("verify_voice", "true").lower() == "true"  # voice verification toggle
 
-        print("🧠 Processing your voice...")
+        # Require audio file upload from frontend for voice input
+        audio_file = request.files.get("file")
+        if not audio_file:
+            return jsonify({"error": "No audio file uploaded"}), 400
 
-        try:
-            # 👉 This is the line that was crashing before
-            user_text = recognizer.recognize_google(audio)
-            print(f"🗣️ You said: {user_text}")
-        except sr.UnknownValueError:
-            # Could not understand the audio
-            msg = "I couldn't understand what you said. Please try again and speak clearly."
-            print("❌ STT UnknownValueError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_unknown",
-                "can_retry": True
-            }), 400
-        except sr.WaitTimeoutError:
-            msg = "I didn't hear anything. Try speaking again."
-            print("⏱️ STT WaitTimeoutError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_timeout",
-                "can_retry": True
-            }), 408
-        except sr.RequestError as e:
-            # Network/API issue with Google STT
-            msg = f"Speech recognition service failed: {e}"
-            print("🌐 STT RequestError: ", msg)
-            return jsonify({
-                "error": msg,
-                "code": "stt_api_error",
-                "can_retry": False
-            }), 502
+        temp_path = "temp_audio.wav"
+        audio_file.save(temp_path)
 
-        # 🧠 Ask Gemini what to do with the recognized text
+        # Load audio to numpy array at 16kHz for voice embedding comparison
+        audio_np, _ = librosa.load(temp_path, sr=16000)
+
+        # Verify voice embedding similarity if enabled
+        if verify_voice:
+            if enrolled_embedding is None:
+                os.remove(temp_path)
+                return jsonify({"error": "No enrolled voice found. Please enroll first."}), 400
+
+            if not is_speaker(audio_np, enrolled_embedding):
+                os.remove(temp_path)
+                return jsonify({"error": "Voice not recognized"}), 403
+
+        # Convert audio to text using SpeechRecognition with Google
+        with sr.AudioFile(temp_path) as source:
+            audio_data = recognizer.record(source)
+            user_text = recognizer.recognize_google(audio_data)
+
+        os.remove(temp_path)
+
+        # Ask Gemini model for action based on recognized user_text
         gemini_decision = ask_gemini_for_action(user_text)
-        print(f"🔍 Raw Gemini decision type: {type(gemini_decision)}")
-
-        # Ensure safe dict structure
-        if not isinstance(gemini_decision, dict):
+        if not isinstance(gemini_decision, dict):  # Safe parse fallback
             try:
                 gemini_decision = json.loads(str(gemini_decision))
             except Exception:
                 gemini_decision = {"action": "none", "reply": str(gemini_decision)}
 
-        # Extract safely
-        action = str(gemini_decision.get("action", "none")).lower()
-        target = gemini_decision.get("target") or ""
-        reply = gemini_decision.get("reply") or ""
-        content = gemini_decision.get("content") or ""
-        to = gemini_decision.get("to") or ""
-        subject = gemini_decision.get("subject") or ""
-        body = gemini_decision.get("body") or ""
+        reply = gemini_decision.get("reply", "")
 
-        print(f"🧩 Parsed action: {action}")
+        # Implement any required action execution here if needed
 
-        # Execute action
-        if action == "open_browser" and target:
-            reply_text = open_browser(target)
-        elif action == "open_app" and target:
-            reply_text = open_local_app(target)
-        elif action == "write_text" and target and content:
-            reply_text = write_to_app(target, content)
-        elif action == "compose_email":
-            reply_text = compose_email(to, subject, body)
-        elif action == "none" and reply:
-            reply_text = reply
-        else:
-            reply_text = "I'm not sure what to do yet."
+        return jsonify({"text": user_text, "reply": reply})
 
-        print(f"✅ Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
-
-    except Exception as e:
-        # 🔥 Log full traceback for debugging
-        print("❌ Full backend error:\n", traceback.format_exc())
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
+    except sr.UnknownValueError:
+        return jsonify({"error": "Could not understand audio."}), 400
+    except sr.WaitTimeoutError:
+        return jsonify({"error": "Listening timed out."}), 408
+    except sr.RequestError as e:
+        return jsonify({"error": f"API request failed: {e}"}), 502
+    except Exception:
+        print(traceback.format_exc())
+        return jsonify({"error": "Internal server error occurred."}), 500
 
 
 # === Text-based route ===
