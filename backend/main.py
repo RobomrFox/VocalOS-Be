@@ -1,3 +1,6 @@
+# main.py
+# This is the ONLY file you need to run.
+
 from flask import Flask, request, jsonify
 from real_time_stt import AudioToTextRecorder
 from stt import VoiceSignature
@@ -14,18 +17,16 @@ import json
 import pyautogui
 import pygetwindow as gw
 import traceback
-import re  # ✅ Needed for regex parsing
-import threading
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
-sys.stderr.reconfigure(encoding='utf-8')
+from dotenv import load_dotenv
+
+from stt import VoiceSignature
+
+from real_time_stt import AudioToTextRecorder
 
 
 
+load_dotenv()
 
-
-
-# === Flask App Setup ===
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
@@ -52,23 +53,20 @@ print("Gemini connected successfully!")
 
 recognizer = sr.Recognizer()
 
-
-# ==============================================================
-# 🧰 Helper Functions
-# ==============================================================
+# === Helper functions ===
 
 def open_browser(target):
-    """Open URL in system default browser."""
+    """Open URL in system default browser (NEW TAB)."""
     try:
-        print(f"🌐 Opening browser: {target}")
+        print(f"🌐 Opening NEW tab: {target}")
         webbrowser.open(target)
-        return f"Opening {target} in your browser."
+        return f"Opening {target} in a new tab."
     except Exception as e:
         return f"❌ Failed to open browser: {e}"
 
 
 def open_local_app(app_name):
-    """Cross-platform local app opener that handles Windows paths."""
+    # ... (This function is unchanged) ...
     try:
         system = platform.system().lower()
         print(f"🖥️ Launching app: {app_name}")
@@ -85,7 +83,6 @@ def open_local_app(app_name):
                 "explorer": "explorer.exe",
                 "word": r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE"
             }
-
             exe_path = app_paths.get(app_name.lower())
             if exe_path:
                 exe_path = os.path.expandvars(exe_path)
@@ -94,18 +91,18 @@ def open_local_app(app_name):
             else:
                 subprocess.Popen(f'start {app_name}', shell=True)
                 return f"Trying to launch {app_name}..."
-
-        elif system == "darwin":
+        
+        elif system == "darwin":  # macOS
             subprocess.Popen(["open", "-a", app_name])
             return f"Opening {app_name} on macOS."
-
+        
         elif system == "linux":
             subprocess.Popen([app_name])
             return f"Launching {app_name} on Linux."
-
+        
         else:
             raise Exception("Unsupported OS")
-
+    
     except Exception as e:
         print(f"❌ Failed to open {app_name}: {e}")
         return f"Sorry, I couldn’t open {app_name}."
@@ -113,6 +110,8 @@ def open_local_app(app_name):
 
 def write_to_app(app_name, content):
     """Focus the app window and type content reliably (Windows-safe)."""
+    import pyautogui, pygetwindow as gw, subprocess, time, platform
+
     try:
         system = platform.system().lower()
         target = app_name.lower()
@@ -132,7 +131,6 @@ def write_to_app(app_name, content):
 
         if not wins:
             return f"❌ Could not find {app_name} window."
-
         win = wins[0]
         print(f"🪟 Found: {win.title}")
 
@@ -146,22 +144,25 @@ def write_to_app(app_name, content):
             win.activate()
         time.sleep(1.0)
 
-        active = gw.getActiveWindow()
-        if active and target in active.title.lower():
-            print("✅ Window confirmed active.")
+        # 4️⃣ Confirm active window
+        for _ in range(5):
+            active = gw.getActiveWindow()
+            if active and target in active.title.lower():
+                print("✅ Window confirmed active.")
+                break
+            time.sleep(0.5)
 
         print(f"⌨️ Typing:\n{content}")
         pyautogui.typewrite(content, interval=0.04)
         print("✅ Typing done.")
         return f"✅ Wrote your text into {app_name}."
-
     except Exception as e:
         print(f"❌ Failed to write: {e}")
         return f"Couldn’t write into {app_name}: {e}"
 
 
 def compose_email(to, subject, body):
-    """Force open Gmail compose window directly with pre-filled fields."""
+    # ... (This function is unchanged) ...
     try:
         import urllib.parse
         to_encoded = urllib.parse.quote(to or "")
@@ -171,19 +172,17 @@ def compose_email(to, subject, body):
             f"https://mail.google.com/mail/?view=cm&fs=1"
             f"&to={to_encoded}&su={subject_encoded}&body={body_encoded}"
         )
-
         print(f"📧 Redirecting to Gmail compose for: {to}")
         system = platform.system().lower()
         if system == "windows":
             chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
             edge_path = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-
             if os.path.exists(chrome_path):
                 subprocess.Popen([chrome_path, gmail_url])
                 return f"📨 Composing an email to {to or 'recipient'} via Chrome."
             elif os.path.exists(edge_path):
                 subprocess.Popen([edge_path, gmail_url])
-                return f"📨 Composing an email to {to or 'recipient'} via Edge."
+                return f"📨 ComTposing an email to {to or 'recipient'} via Edge."
             else:
                 os.startfile(gmail_url)
                 return f"📨 Composing an email to {to or 'recipient'} in default browser."
@@ -194,55 +193,65 @@ def compose_email(to, subject, body):
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
+def get_open_windows():
+    system = platform.system().lower()
+    if system == "windows":
+        return [w.title for w in gw.getAllWindows() if w.title]
+    else:
+        # On macOS/Linux, cannot enumerate windows with pygetwindow
+        return []
 
-# ==============================================================
-# 🤖 Gemini Logic
-# ==============================================================
-
+# === Ask Gemini for actions ===
 def ask_gemini_for_action(user_text):
     """Ask Gemini to interpret the user's intent and return a safe structured action."""
     open_windows = [w.title for w in gw.getAllWindows() if w.title]
     context = f"Currently open windows: {open_windows[:5]}"
 
     system_prompt = """
-You are VocalAI, a desktop AI assistant that can perform user commands.
-You can open websites, launch apps, write or append text in programs, or compose emails in Gmail.
+You are VocalAI, a desktop AI assistant that translates user speech into JSON commands.
+You can control a web browser and local applications.
 
 Always reply **only in valid JSON** using one of the following structures:
 
-- { "action": "open_browser", "target": "<url or website name>" }
-- { "action": "open_app", "target": "<local application name>" }
-- { "action": "write_text", "target": "<app name>", "content": "<text to write>" }
-- { "action": "append_text", "target": "<app name>", "content": "<text to add>" }
-- { "action": "compose_email", "to": "<recipient>", "subject": "<subject>", "body": "<email body>" }
-- { "action": "none", "reply": "<normal chat response>" }
-"""
+- {{ "action": "open_browser", "target": "<url or website name>" }}
+- {{ "action": "open_app", "target": "<local application name>" }}
+- {{ "action": "write_text", "target": "<app name>", "content": "<the text to write>" }}
+- {{ "action": "append_text", "target": "<app name>", "content": "<text to add>" }}
+- {{ "action": "compose_email", "to": "<recipient email or name>", "subject": "<subject line>", "body": "<email body text>" }}
+- {{ "action": "none", "reply": "<textual reply>" }}
+
+Example:
+User: "Send an email to my professor about my project progress."
+→ {{ "action": "compose_email", "to": "professor", "subject": "Project Progress Update", "body": "Dear Professor, I wanted to update you on my current project progress..." }}
+
+Be concise, structured, and strictly output JSON.
+Context:
+{}
+""".format(context)
 
     print("🧠 Asking Gemini to interpret + generate meaningful content...")
+    response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
+    text = (response.text or "").strip()
+    print(f"🤖 Gemini raw output: {text}")
 
+    # ✅ Strip Markdown fences if present
+    if text.startswith("```"):
+        text = text.replace("```json", "").replace("```", "").strip()
+
+    # ✅ Try parsing safely
     try:
-        response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
-        text = (response.text or "").strip()
-        print(f"🤖 Gemini raw output: {text}")
-
-        # Remove Markdown-style fences
-        if text.startswith("```"):
-            text = text.replace("```json", "").replace("```", "").strip()
-
-        # Try direct JSON parse
-        try:
-            parsed = json.loads(text)
-            return parsed
-        except Exception as e:
-            print(f"⚠️ JSON parsing failed: {e}")
-            match = re.search(r"\{[\s\S]*\}", text)
-            if match:
-                try:
-                    parsed = json.loads(match.group(0))
-                    return parsed
-                except Exception as e2:
-                    print(f"⚠️ Fallback parse failed: {e2}")
-
+        return json.loads(text)
+    except Exception as e:
+        print(f"⚠️ JSON parsing failed: {e}")
+        # Try to extract first valid JSON-looking segment
+        import re
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception as e2:
+                print(f"⚠️ Fallback parse failed: {e2}")
+        # Final fallback
         return {"action": "none", "reply": text}
 
     except Exception as e:
@@ -333,140 +342,40 @@ def listen_voice():
 
 @app.route("/listen", methods=["POST"])
 def listen_text():
-    try:
-        data = request.get_json()
-        user_text = data.get("text", "").strip()
+    """📝 Handle text messages directly"""
+    data = request.get_json()
+    user_text = data.get("text", "").strip()
 
-        if not user_text:
-            return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
+    if not user_text:
+        return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
 
-        print(f"💬 Text command: {user_text}")
+    print(f"💬 Text command: {user_text}")
 
-        gemini_decision = ask_gemini_for_action(user_text)
-        action = gemini_decision.get("action", "none")
-        target = gemini_decision.get("target")
-        reply = gemini_decision.get("reply", "")
-        content = gemini_decision.get("content", "")
-        to = gemini_decision.get("to", "")
-        subject = gemini_decision.get("subject", "")
-        body = gemini_decision.get("body", "")
-
-        if action == "open_browser" and target:
-            reply_text = open_browser(target)
-        elif action == "open_app" and target:
-            reply_text = open_local_app(target)
-        elif action == "write_text" and target and content:
-            reply_text = write_to_app(target, content)
-        elif action == "compose_email":
-            reply_text = compose_email(to, subject, body)
-        elif action == "none" and reply:
-            reply_text = reply
-        else:
-            reply_text = "I'm not sure what to do yet."
-
-        print(f"✅ Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
-
-    except Exception as e:
-        print("❌ Full backend error:\n", traceback.format_exc())
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
-
-# ==============================================================
-# 💤 Wakeword Detection Route
-# ==============================================================
-
-@app.route("/wakeword", methods=["POST"])
-def wakeword():
-    try:
-        with sr.Microphone() as source:
-            print("🎤 Listening for possible wake phrase...")
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
-
-        text = recognizer.recognize_google(audio).lower()
-        print(f"🗣️ Heard → {text}")
-
-        # ✅ Use double braces {{ }} so they render literally
-        prompt = """
-        You are Audient, a voice assistant.
-        Determine if the user is trying to wake up or greet you.
-        If it sounds like 'hey computer', 'hello', 'hi computer', etc., return:
-        { "wake": true, "reason": "greeting detected" }
-        Otherwise return:
-        { "wake": false, "reason": "not a wake phrase" }
-        User said: "<text>"
-        """.replace("<text>", text)
-
-
-        result = model.generate_content(prompt)
-        reply = result.text.strip()
-
-        match = re.search(r"\{[\s\S]*\}", reply)
-        data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
-
-        print(f"🤖 Gemini decision → {data}")
-
-        return jsonify({
-            "wakeword_detected": data.get("wake", False),
-            "text": text,
-            "reason": data.get("reason", "")
-        })
-
-    except sr.UnknownValueError:
-        return jsonify({"wakeword_detected": False, "error": "no speech detected"})
-    except Exception as e:
-        print("❌ Wakeword detection failed:", e)
-        return jsonify({"wakeword_detected": False, "error": str(e)})
-
-
-def wakeword_background_listener():
-    """Continuously listens for wake words and triggers main listening flow."""
-    while True:
-        try:
-            with sr.Microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                print("👂 Passive listening for wake word...")
-                audio = recognizer.listen(source, timeout=4, phrase_time_limit=4)
-
-            text = ""
-            try:
-                text = recognizer.recognize_google(audio).lower()
-                print(f"🗣️ Passive heard: {text}")
-            except sr.UnknownValueError:
-                continue  # just ignore silence
-            except Exception as e:
-                print("⚠️ Wakeword recognition issue:", e)
-                continue
-
-            # If the user says "hey audient" or "ok audient"
-            if re.search(r"\b(hey|hi|ok)\s+(audient|assistant|computer)\b", text):
-                print("🎉 Wake word detected! Activating listening mode...")
-                # Trigger real listening process
-                try:
-                    with app.test_request_context("/listen-voice", method="POST", json={"trigger": "wake"}):
-                        listen_voice()
-                except Exception as e:
-                    print("⚠️ Wake listener trigger failed:", e)
-        except Exception as e:
-            print("⚠️ Wakeword listener loop error:", e)
-            time.sleep(1)
-
-# ==============================================================
-# 🚀 Run Server
-# ==============================================================
-
-if __name__ == "__main__":
-    print("🚀 Initializing VocalAI backend...")
-
-    # ✅ Start the background thread FIRST before Flask starts
-    wake_thread = threading.Thread(
-        target=wakeword_background_listener,
-        daemon=True  # stops automatically when Flask exits
-    )
-    wake_thread.start()
-    print("🎧 Wakeword listener thread started successfully!")
-
-    # ✅ Run Flask ONCE with reloader disabled to prevent double instances
-    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
+    gemini_decision = ask_gemini_for_action(user_text)
+    action = gemini_decision.get("action", "none")
+    target = gemini_decision.get("target")
+    reply = gemini_decision.get("reply", "")
+    content = gemini_decision.get("content", "")
     
+    # ✅ You added these lines, which is correct
+    to = gemini_decision.get("to", "")
+    subject = gemini_decision.get("subject", "")
+    body = gemini_decision.get("body", "")
+
+    if action == "open_browser" and target:
+        reply_text = open_browser(target)
+    elif action == "open_app" and target:
+        reply_text = open_local_app(target)
+    elif action == "write_text" and target and content:
+        reply_text = write_to_app(target, content)
+    # 🚨 ADD THIS BLOCK:
+    elif action == "compose_email":
+        reply_text = compose_email(to, subject, body)
+    else:
+        reply_text = reply or "I'm here and listening."
+
+    return jsonify({"reply": reply_text})
+
+# === Run server ===
+if __name__ == "__main__":
+    app.run(debug=True)
