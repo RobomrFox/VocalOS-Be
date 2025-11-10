@@ -345,42 +345,46 @@ export default function App() {
         }}
       >
         {/* Header section */}
-        <div className="flex flex-col items-center justify-center flex-none space-y-5">
+        <div className="flex flex-col items-center justify-center flex-none space-y-6">
           <h1 className="audient-gradient font-extrabold text-7xl tracking-wide select-none animate-float">
             Audient
           </h1>
-          <button
-            onClick={() =>
-              compactMode ? handleMoveCenter() : handleStartListening()
-            }
-            className={`px-10 py-3 rounded-full text-lg font-medium transition duration-300 shadow-lg backdrop-blur-md ${
-              listening
-                ? "bg-cyan-500/80 text-black font-semibold"
-                : "bg-white/10 hover:bg-white/20"
-            }`}
-          >
-            {compactMode
-              ? "Exit"
-              : listening
-              ? "🟢 Listening..."
-              : "🎙️ Start Listening"}
-          </button>
 
-          {/* ✅ 2. Added Toggle Button */}
-          <button
-            onClick={() => setVoiceSignatureEnabled(!voiceSignatureEnabled)}
-            className={`px-6 py-2 rounded-full text-sm font-medium transition duration-300 shadow-lg backdrop-blur-md ${
-              voiceSignatureEnabled
-                ? "bg-cyan-500/80 text-black"
-                : "bg-white/10 hover:bg-white/20"
-            }`}
-          >
-            {voiceSignatureEnabled
-              ? "🔒 Voice Signature: ON"
-              : "🔓 Voice Signature: OFF"}
-          </button>
-          
+          {/* Group buttons in a horizontal row */}
+          <div className="flex flex-wrap items-center justify-center gap-x-10 gap-y-4 mt-2">
+            <button
+              onClick={() =>
+                compactMode ? handleMoveCenter() : handleStartListening()
+              }
+              className={`px-10 py-3 rounded-full text-lg font-medium transition duration-300 shadow-lg backdrop-blur-md ${
+                listening
+                  ? "bg-cyan-500/80 text-black font-semibold"
+                  : "bg-white/10 hover:bg-white/20"
+              }`}
+            >
+              {compactMode
+                ? "Exit"
+                : listening
+                ? "🟢 Listening..."
+                : "🎙️ Start Listening"}
+            </button>
+
+            {/* ✅ Voice Signature Toggle Button */}
+            <button
+              onClick={() => setVoiceSignatureEnabled(!voiceSignatureEnabled)}
+              className={`px-6 py-2 rounded-full text-sm font-medium transition duration-300 shadow-lg backdrop-blur-md ${
+                voiceSignatureEnabled
+                  ? "bg-cyan-500/80 text-black"
+                  : "bg-white/10 hover:bg-white/20"
+              }`}
+            >
+              {voiceSignatureEnabled
+                ? "🔒 Voice Signature: ON"
+                : "🔓 Voice Signature: OFF"}
+            </button>
+          </div>
         </div>
+
 
         {/* 💬 Conversation scrollable area */}
         <div
@@ -432,17 +436,45 @@ export default function App() {
 =================================== */
 function MockHaloGlow({ onIntensityChange }) {
   useEffect(() => {
-    // Create a "breathing" pulse effect
-    const interval = setInterval(() => {
-      // Calculate a pulsing value between 0.3 and 1.0
-      const pulse = (Math.sin(Date.now() / 400) + 1) / 2; // Oscillates between 0 and 1
-      const newIntensity = 0.3 + pulse * 0.7; // Scale to 0.3 - 1.0
-      onIntensityChange(newIntensity);
-    }, 50); // Update 20 times per second
+    let audioContext, analyser, source, dataArray, rafId;
 
-    // Clear interval on cleanup
-    return () => clearInterval(interval);
+    async function initMic() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new AudioContext();
+        analyser = audioContext.createAnalyser();
+        source = audioContext.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 512;
+        const bufferLength = analyser.frequencyBinCount;
+        dataArray = new Uint8Array(bufferLength);
+
+        const update = () => {
+          analyser.getByteTimeDomainData(dataArray);
+          let sumSquares = 0;
+          for (let i = 0; i < bufferLength; i++) {
+            const val = (dataArray[i] - 128) / 128; // normalize -1 to 1
+            sumSquares += val * val;
+          }
+          const rms = Math.sqrt(sumSquares / bufferLength);
+          const intensity = Math.min(rms * 3, 1); // scale & clamp 0–1
+          onIntensityChange(intensity);
+          rafId = requestAnimationFrame(update);
+        };
+
+        update();
+      } catch (err) {
+        console.error("🎤 MicHaloGlow error:", err);
+      }
+    }
+
+    initMic();
+
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      if (audioContext) audioContext.close();
+    };
   }, [onIntensityChange]);
 
-  return null; // This component is purely visual via the parent's style
+  return null;
 }

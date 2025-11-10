@@ -388,3 +388,8 @@ h1 {
 @keyframes blink {
   50% { opacity: 0; }
 }
+
+/* Ensure top-level button groups have proper spacing */
+button + button {
+  margin-left: 1.5rem;
+}

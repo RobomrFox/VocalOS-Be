@@ -60,9 +60,9 @@ if os.path.exists(SCRIPT_DIR):
 else:
     print(f"🧠 [main.py]: ⚠️ WARNING: .env file not found at")
 
-api_key = os.getenv("GOOGLE_API_KEY")
+api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    print("❌ [main.py]: CRITICAL ERROR: 'GOOGLE_API_KEY' not found in .env file.")
+    print("❌ [main.py]: CRITICAL ERROR: 'GEMINI_API_KEY' not found in .env file.")
     sys.exit()
 
 PICOVOICE_ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY")
@@ -223,6 +223,65 @@ def open_local_app(app_name):
         print(f"❌ Failed to open {app_name}: {e}")
         return f"Sorry, I couldn’t open {app_name}."
 
+def close_local_app(app_name):
+    """
+    Attempts to close a local application gracefully.
+    Works across Windows, macOS, and Linux.
+    """
+    try:
+        system = platform.system().lower()
+        print(f"🖥️ [System]: Attempting to close '{app_name}'...")
+
+        # 🧠 Map user-friendly names to actual process names
+        app_map = {
+            "chrome": "chrome",
+            "google chrome": "chrome",
+            "vscode": "Code",
+            "visual studio code": "Code",
+            "notepad": "notepad",
+            "word": "WINWORD",
+            "calculator": "Calculator",
+            "explorer": "explorer"
+        }
+
+        process_name = app_map.get(app_name.lower(), app_name)
+
+        if system == "windows":
+            subprocess.run(["taskkill", "/F", "/IM", f"{process_name}.exe"],
+                           capture_output=True, text=True)
+        elif system == "darwin":  # macOS
+            subprocess.run(["pkill", "-f", process_name],
+                           capture_output=True, text=True)
+        elif system == "linux":
+            subprocess.run(["pkill", process_name],
+                           capture_output=True, text=True)
+        else:
+            raise Exception("Unsupported OS")
+
+        print(f"✅ Closed {process_name}.")
+        return f"✅ Closed {app_name.title()} successfully."
+
+    except Exception as e:
+        print(f"❌ Failed to close {app_name}: {e}")
+        return f"❌ Sorry, I couldn’t close {app_name}: {e}"
+
+
+def close_browser(full=False):
+    """
+    Closes the current browser tab or entire Playwright session.
+    Set full=True to close all tabs and end the session.
+    """
+    try:
+        if full:
+            print("🌐 [Playwright] Closing entire browser session.")
+            result = call_playwright_service({"action": "close_browser"})
+        else:
+            print("🌐 [Playwright] Closing current tab.")
+            result = call_playwright_service({"action": "close_current_tab"})
+        return f"📂 Browser closed: {result}"
+    except Exception as e:
+        print(f"❌ [main.py]: Failed to close browser via Playwright: {e}")
+        return f"❌ Failed to close browser: {e}"
 
 def write_to_app(app_name, content):
     try:
@@ -265,7 +324,60 @@ def write_to_app(app_name, content):
     except Exception as e:
         print(f"❌ Failed to write: {e}")
         return f"Couldn’t write into {app_name}: {e}"
-    
+
+def adjust_volume(level):
+    """Adjusts system volume (Windows/macOS/Linux compatible)."""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            from ctypes import POINTER, cast
+            from comtypes import CLSCTX_ALL
+            from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            if level == "up":
+                volume.VolumeStepUp(None)
+            elif level == "down":
+                volume.VolumeStepDown(None)
+            elif level == "mute":
+                volume.SetMute(1, None)
+            elif level == "unmute":
+                volume.SetMute(0, None)
+            return f"Volume adjusted: {level}"
+        else:
+            print(f"🔊 Simulating volume control: {level}")
+            return f"Adjusted volume: {level}"
+    except Exception as e:
+        print("⚠️ Volume control failed:", e)
+        return "Failed to change volume."
+
+def adjust_brightness(level):
+    """Simulate brightness control (Windows or fallback)."""
+    try:
+        if platform.system() == "Windows":
+            print(f"💡 Adjusting brightness → {level}")
+            return f"Brightness {level}"
+        else:
+            print(f"💡 Simulated brightness adjustment: {level}")
+            return f"Brightness adjusted: {level}"
+    except Exception as e:
+        return f"Brightness control error: {e}"
+
+def delete_file(path):
+    try:
+        os.remove(path)
+        return f"Deleted file: {path}"
+    except Exception as e:
+        return f"Failed to delete {path}: {e}"
+
+def rename_file(old, new):
+    try:
+        os.rename(old, new)
+        return f"Renamed '{old}' to '{new}'."
+    except Exception as e:
+        return f"Failed to rename: {e}"    
+
 #
 # --- THIS FUNCTION IS UNCHANGED ---
 #
@@ -303,6 +415,41 @@ def compose_email_and_refresh():
         print(f"❌ Gmail compose failed: {e}")
         return f"❌ Failed to open Gmail compose — {e}"
 
+def handle_email_action(data):
+    """Handles all email_* actions from Gemini."""
+    global email_draft_session
+
+    act = data.get("action")
+    if act == "email_start_professor":
+        name = data.get("name", "").lower()
+        email = PROFESSOR_DB.get(name)
+        if not email:
+            return f"I don’t have a professor named {name}."
+        email_draft_session = {"to": email, "to_name": name.title(), "subject": "", "body_content": ""}
+        return compose_email_and_refresh()
+
+    elif act == "email_start_generic":
+        email = data.get("to")
+        email_draft_session = {"to": email, "to_name": email.split('@')[0], "subject": "", "body_content": ""}
+        return compose_email_and_refresh()
+
+    elif act == "email_set_title":
+        email_draft_session["subject"] = data.get("title")
+        return compose_email_and_refresh()
+
+    elif act == "email_set_content":
+        email_draft_session["body_content"] = data.get("content")
+        return compose_email_and_refresh()
+
+    elif act in ["email_clear_title", "email_clear_content"]:
+        key = "subject" if "title" in act else "body_content"
+        email_draft_session[key] = ""
+        return compose_email_and_refresh()
+
+    elif act == "playwright_send_email":
+        return "Email sent (simulated)."
+    else:
+        return "Unknown email action."
 
 def ask_gemini_for_action(user_text):
     # ... (This function is unchanged) ...
@@ -377,6 +524,105 @@ def ask_gemini_for_action(user_text):
             except Exception as e2:
                 print(f"⚠️ [main.py]: Fallback parse failed: {e2}")
         return {"action": "none", "reply": text}
+
+def execute_action(action_json):
+    """
+    Executes all supported VocalAI JSON actions.
+    Supports single or list-based JSON actions.
+    """
+
+    # Handle multiple sequential actions (Gemini sometimes returns a list)
+    if isinstance(action_json, list):
+        for a in action_json:
+            execute_action(a)
+        return
+
+    act = str(action_json.get("action", "none")).lower()
+    target = action_json.get("target", "")
+    content = action_json.get("content", "")
+    reply_text = action_json.get("reply", "")
+
+    # 🧭 Local App Controls
+    if act == "open_app":
+        reply_text = open_local_app(target)
+    elif act == "close_app":
+        reply_text = close_local_app(target)
+    elif act == "focus_app":
+        focus_local_app(target)
+        reply_text = f"Focused {target} window."
+    elif act == "minimize_app":
+        minimize_local_app(target)
+        reply_text = f"Minimized {target}."
+    elif act == "maximize_app":
+        maximize_local_app(target)
+        reply_text = f"Maximized {target}."
+    elif act == "lock_screen":
+        lock_screen()
+        reply_text = "System locked."
+
+    # 🔊 Volume / Brightness Controls
+    elif act == "control_volume":
+        level = action_json.get("level", "up")
+        reply_text = adjust_volume(level)
+    elif act == "control_brightness":
+        level = action_json.get("level", "up")
+        reply_text = adjust_brightness(level)
+
+    # 💡 Notification
+    elif act == "show_notification":
+        print(f"🔔 Notification: {content}")
+        reply_text = f"Notification shown: {content}"
+
+    # 📁 Folder / File Operations
+    elif act == "open_folder":
+        reply_text = open_folder(target)
+    elif act == "file_open":
+        reply_text = open_folder(target)
+    elif act == "file_delete":
+        reply_text = delete_file(target)
+    elif act == "file_rename":
+        old = action_json.get("old_name")
+        new = action_json.get("new_name")
+        reply_text = rename_file(old, new)
+
+    # 🌐 Browser / Playwright
+    elif act == "open_browser":
+        reply_text = open_browser(target)
+    elif act == "close_browser":
+        reply_text = close_browser(full=True)
+    elif act.startswith("playwright_"):
+        payload = action_json.copy()
+        payload["action"] = act.replace("playwright_", "")
+        reply_text = call_playwright_service(payload)
+
+    # 🕒 Reminders / Time
+    elif act == "create_reminder":
+        reply_text = f"Reminder set for {action_json.get('time')} → {action_json.get('content')}."
+    elif act == "get_time":
+        reply_text = f"The current time is {time.strftime('%H:%M:%S')}."
+    elif act == "get_date":
+        reply_text = f"Today's date is {time.strftime('%Y-%m-%d')}."
+
+    # 📧 Email
+    elif act.startswith("email_"):
+        reply_text = handle_email_action(action_json)
+
+    # 🧠 Fallbacks / Verification
+    elif act == "start_voice_verification":
+        reply_text = "Starting voice verification."
+    elif act == "none":
+        reply_text = reply_text or "I'm listening."
+
+    # 🚫 Unknowns
+    else:
+        reply_text = f"Unknown or unimplemented action: {act}"
+        print(f"⚠️ Unrecognized action → {action_json}")
+
+    print(f"✅ Action Executed → {act} | Reply → {reply_text}")
+    return reply_text
+
+
+
 
 #
 # --- THIS IS THE NEW, FASTER /listen-voice FUNCTION ---
@@ -493,6 +739,11 @@ def listen_voice():
                 action = browser_result[action]
             elif action == "open_app":
                 reply_text = open_local_app(gemini_decision.get("target"))
+            elif action == "close_app":
+                reply_text = close_local_app(gemini_decision.get("target"))
+
+            elif action == "close_browser":
+                reply_text = close_browser(full=True)
             elif action == "write_text":
                 reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
             

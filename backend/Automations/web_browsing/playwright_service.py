@@ -8,6 +8,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from playwright.sync_api import sync_playwright, Page, BrowserContext
 import atexit
+import time
 
 app = Flask(__name__)
 CORS(app)
@@ -109,21 +110,45 @@ def execute_command():
             url = data.get("target")
             if not url.startswith("http"):
                 url = "https://" + url
+            print(f"[playwright_service]: Navigating to {url}")
             page.goto(url)
-            page.wait_for_load_state("load", timeout=5000)
+            page.wait_for_load_state("load", timeout=8000)
+            # ✅ FIX: small grace delay so subsequent actions don’t fail
+            import time
+            time.sleep(1.2)
             return jsonify({"status": "success", "reply": f"Navigated to {page.title()}"})
+
 
         elif action == "fill":
             selector = data.get("selector")
             text = data.get("content")
-            page.locator(selector).fill(text)
-            return jsonify({"status": "success", "reply": f"Filled '{selector}'"})
+            try:
+                page.wait_for_selector(selector, state="visible", timeout=8000)
+                element = page.locator(selector)
+                element.click()  # ensure focus
+                element.fill("")  # clear any existing text
+                element.type(text, delay=50)  # human-like typing
+                print(f"[playwright_service]: ✍️ Filled '{selector}' with '{text}'")
+                return jsonify({"status": "success", "reply": f"Typed '{text}' into {selector}."})
+            except Exception as e:
+                print(f"[playwright_service]: ❌ fill failed: {e}")
+                return jsonify({"status": "error", "reply": f"Could not fill {selector}: {e}"})
+
             
         elif action == "press":
             selector = data.get("selector")
             key = data.get("key")
-            page.locator(selector).press(key)
-            return jsonify({"status": "success", "reply": f"Pressed '{key}' on '{selector}'"})
+            try:
+                page.wait_for_selector(selector, state="attached", timeout=5000)
+                element = page.locator(selector)
+                element.press(key)
+                page.wait_for_load_state("load", timeout=10000)
+                print(f"[playwright_service]: ⌨️ Pressed {key} on {selector}")
+                return jsonify({"status": "success", "reply": f"Pressed {key} on {selector}."})
+            except Exception as e:
+                print(f"[playwright_service]: ❌ press failed: {e}")
+                return jsonify({"status": "error", "reply": f"Could not press {key}: {e}"})
+
         
         elif action == "scroll":
             direction = data.get("direction", "down")
@@ -134,9 +159,24 @@ def execute_command():
             return jsonify({"status": "success", "reply": f"Scrolled {direction}"})
 
         elif action == "click_first_google_result":
-            selector = "div[id='search'] h3 a"
-            page.locator(selector).first.click()
-            return jsonify({"status": "success", "reply": "Clicked the first Google result."})
+            # ✅ Wait until the search results container is visible
+            page.wait_for_selector("div#search", timeout=10000, state="visible")
+            results = page.locator("div#search h3 a")
+            count = results.count()
+            if count == 0:
+                return jsonify({
+                    "status": "error",
+                    "reply": "No search results found on Google page."
+                }), 404
+
+            results.first.click()
+            page.wait_for_load_state("load", timeout=8000)
+            print("[playwright_service]: ✅ Clicked first Google search result.")
+            return jsonify({
+                "status": "success",
+                "reply": "Opened the first Google result successfully."
+            })
+
             
         elif action == "click_first_youtube_video":
             selector = "a#video-title"
@@ -209,6 +249,9 @@ def execute_command():
 
         else:
             return jsonify({"status": "error", "reply": f"Unknown action: {action}"}), 400
+        
+        import time
+        time.sleep(1.2)
             
     except Exception as e:
         print(f"[playwright_service]: ❌ Error: {e}")
