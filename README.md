@@ -1,3 +1,14 @@
+# Audeint
+
+## Presntation Deck
+[View Canva Design](https://www.canva.com/design/DAG4PUl6rAg/CTvamOW3CWJurWlOB47LCw/view?utm_content=DAG4PUl6rAg&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=h2bf6e7ecbb)
+
+
+
+
+
+## For Developers
+
 Step 1: Install UV
 ```
 curl -LsSf https://astral.sh/uv/install.sh | sh
