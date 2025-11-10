@@ -26,6 +26,13 @@ import numpy as np
 import wave
 import threading
 
+from flask_socketio import SocketIO, emit
+
+import pvporcupine
+from pvporcupine import PorcupineError
+import sounddevice as sd
+import queue
+
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stderr.reconfigure(encoding='utf-8')
 
@@ -33,6 +40,8 @@ sys.stderr.reconfigure(encoding='utf-8')
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- Gemini API setup ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -56,9 +65,28 @@ if not api_key:
     print("❌ [main.py]: CRITICAL ERROR: 'GOOGLE_API_KEY' not found in .env file.")
     sys.exit()
 
+PICOVOICE_ACCESS_KEY = os.getenv("PICOVOICE_ACCESS_KEY")
+if not PICOVOICE_ACCESS_KEY:
+    print("❌ [main.py]: CRITICAL ERROR: 'PICOVOICE_ACCESS_KEY' not found in .env file.")
+    print("Please get a free key from https://console.picovoice.ai/")
+    sys.exit()
+
+pause_listener = threading.Event()
+pause_listener.set()
+
 genai.configure(api_key=api_key)
-model = genai.GenerativeModel("gemini-2.0-flash")
+model = genai.GenerativeModel("gemini-2.5-flash-lite")
 recognizer = sr.Recognizer()
+
+def calibrate_ambient_noise():
+    """Listens for 1s to set the initial energy threshold."""
+    print("🎤 Calibrating ambient noise... Please be quiet for 1 second.")
+    try:
+        with sr.Microphone() as source:
+            recognizer.adjust_for_ambient_noise(source, duration=1)
+        print("✅ Ambient noise calibrated.")
+    except Exception as e:
+        print(f"⚠️ Could not calibrate ambient noise: {e}. Using defaults.")
 
 # --- Professor Database ---
 PROFESSOR_DB = {
@@ -370,6 +398,14 @@ def listen_voice():
     4. EXECUTES the action
     5. Returns the final text, reply, and action
     """
+    # --- ADD THIS BLOCK ---
+    pause_listener.clear() # Tell the listener thread to pause
+    print("🚦 [main.py]: Paused wake word listener.")
+    # Give the thread a moment to release the mic
+    # You might not need this, but it's safer
+    time.sleep(0.1) 
+    # --- END BLOCK ---
+
     global email_draft_session  # <-- ✅ ADDED THIS
     try:
         # Check if voice verification is requested
@@ -384,9 +420,9 @@ def listen_voice():
         # --- (Voice Enrollment & Verification logic is unchanged) ---
         if verify_voice:
             if enrolled_embedding is None:
+                recognizer.adjust_for_ambient_noise(source, duration=.75)
                 print("No enrolled voice found. Recording and enrolling now...")
                 with sr.Microphone() as source:
-                    recognizer.adjust_for_ambient_noise(source, duration=1)
                     print("Recording 10s for voice enrollment - SPEAK CONTINUOUSLY...")
                     audio = recognizer.listen(source, timeout=15, phrase_time_limit=10)
                 
@@ -415,7 +451,7 @@ def listen_voice():
             # Record and verify
             print("🎧 Recording for verification and transcription...")
             with sr.Microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                recognizer.adjust_for_ambient_noise(source, duration=.5)
                 recognizer.pause_threshold = 0.7
                 audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
 
@@ -435,7 +471,6 @@ def listen_voice():
             # Standard recording without verification
             print("Listening... please speak clearly.")
             with sr.Microphone() as source:
-                recognizer.adjust_for_ambient_noise(source, duration=1)
                 audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
 
         # --- (Transcription logic is unchanged) ---
@@ -519,6 +554,13 @@ def listen_voice():
     except Exception as e:
         print("[main.py] Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+    
+    finally:
+        # --- ADD THIS BLOCK ---
+        # ALWAYS resume the wake word listener when this function is done
+        pause_listener.set() 
+        print("🟢 [main.py]: Resumed wake word listener.")
+        # --- END BLOCK ---
 #
 # --- /listen (text) route is UNCHANGED and now handles all actions ---
 #
@@ -596,106 +638,171 @@ def listen_text():
 # 💤 Wakeword Detection + Passive Listener
 # ==============================================================
 
-@app.route("/wakeword", methods=["POST"])
-def wakeword():
-    try:
-        with sr.Microphone() as source:
-            print("🎤 Listening for possible wake phrase...")
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
+# @app.route("/wakeword", methods=["POST"])
+# def wakeword():
+#     try:
+#         with sr.Microphone() as source:
+#             print("🎤 Listening for possible wake phrase...")
+#             audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
 
-        text = recognizer.recognize_google(audio).lower()
-        print(f"🗣️ Heard → {text}")
+#         text = recognizer.recognize_google(audio).lower()
+#         print(f"🗣️ Heard → {text}")
 
-        prompt = f"""
-        You are Audient, a voice assistant.
-        Determine if the user is trying to wake you up.
-        If it sounds like 'hey computer', 'hello', 'hi computer', etc., return:
-        {{ "wake": true, "reason": "greeting detected" }}
-        Otherwise return:
-        {{ "wake": false, "reason": "not a wake phrase" }}
-        User said: "{text}"
-        """
-        result = model.generate_content(prompt)
-        reply = result.text.strip()
-        match = re.search(r"\{[\s\S]*\}", reply)
-        data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
+#         prompt = f"""
+#         You are Audient, a voice assistant.
+#         Determine if the user is trying to wake you up.
+#         If it sounds like 'hey computer', 'hello', 'hi computer', etc., return:
+#         {{ "wake": true, "reason": "greeting detected" }}
+#         Otherwise return:
+#         {{ "wake": false, "reason": "not a wake phrase" }}
+#         User said: "{text}"
+#         """
+#         result = model.generate_content(prompt)
+#         reply = result.text.strip()
+#         match = re.search(r"\{[\s\S]*\}", reply)
+#         data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
 
-        print(f"🤖 Gemini decision → {data}")
-        return jsonify({
-            "wakeword_detected": data.get("wake", False),
-            "text": text,
-            "reason": data.get("reason", "")
-        })
-    except sr.UnknownValueError:
-        return jsonify({"wakeword_detected": False, "error": "no speech detected"})
-    except Exception as e:
-        print("❌ Wakeword detection failed:", e)
-        return jsonify({"wakeword_detected": False, "error": str(e)})
+#         print(f"🤖 Gemini decision → {data}")
+#         return jsonify({
+#             "wakeword_detected": data.get("wake", False),
+#             "text": text,
+#             "reason": data.get("reason", "")
+#         })
+#     except sr.UnknownValueError:
+#         return jsonify({"wakeword_detected": False, "error": "no speech detected"})
+#     except Exception as e:
+#         print("❌ Wakeword detection failed:", e)
+#         return jsonify({"wakeword_detected": False, "error": str(e)})
 
-def wakeword_background_listener():
-    print("🎧 [WakeListener]: Starting passive wake listener (Siri-style)...")
-    recognizer = sr.Recognizer()
-    sample_rate = 16000
-    block_duration = 2  # seconds
-    q = queue.Queue()
+# def wakeword_background_listener():
+#     print("🎧 [WakeListener]: Starting passive wake listener (Siri-style)...")
+#     recognizer = sr.Recognizer()
+#     sample_rate = 16000
+#     block_duration = 2  # seconds
+#     q = queue.Queue()
 
-    # Callback collects audio chunks
-    def callback(indata, frames, time_info, status):
-        if status:
-            print(f"🎙️ Audio input status: {status}")
-        q.put(indata.copy())
+#     # Callback collects audio chunks
+#     def callback(indata, frames, time_info, status):
+#         if status:
+#             print(f"🎙️ Audio input status: {status}")
+#         q.put(indata.copy())
 
-    # Continuous input stream
-    with sd.InputStream(samplerate=sample_rate, channels=1, callback=callback):
-        buffer = np.zeros(int(sample_rate * block_duration))
-        last_detection_time = 0
+#     # Continuous input stream
+#     with sd.InputStream(samplerate=sample_rate, channels=1, callback=callback):
+#         buffer = np.zeros(int(sample_rate * block_duration))
+#         last_detection_time = 0
 
-        while True:
-            try:
-                data = q.get()
-                buffer = np.concatenate((buffer[len(data):], data.flatten()))
-                audio = sr.AudioData(buffer.tobytes(), sample_rate, 2)
+#         while True:
+#             try:
+#                 data = q.get()
+#                 buffer = np.concatenate((buffer[len(data):], data.flatten()))
+#                 audio = sr.AudioData(buffer.tobytes(), sample_rate, 2)
 
-                # Attempt recognition only every few seconds
-                if time.time() - last_detection_time > 2:
-                    try:
-                        text = recognizer.recognize_google(audio).lower().strip()
-                        if text:
-                            print(f"🗣️ Heard → {text}")
-                            if re.search(r"\b(hey|hi|ok)\s+(audient|assistant|computer)\b", text):
-                                print("🎉 Wake word detected! Activating...")
-                                threading.Thread(target=activate_listening_session, daemon=True).start()
-                                last_detection_time = time.time()
-                    except sr.UnknownValueError:
-                        pass
-                    except Exception as e:
-                        print(f"⚠️ Wakeword recognition issue: {e}")
+#                 # Attempt recognition only every few seconds
+#                 if time.time() - last_detection_time > 2:
+#                     try:
+#                         text = recognizer.recognize_google(audio).lower().strip()
+#                         if text:
+#                             print(f"🗣️ Heard → {text}")
+#                             if re.search(r"\b(hey|hi|ok)\s+(audient|assistant|computer)\b", text):
+#                                 print("🎉 Wake word detected! Activating...")
+#                                 threading.Thread(target=activate_listening_session, daemon=True).start()
+#                                 last_detection_time = time.time()
+#                     except sr.UnknownValueError:
+#                         pass
+#                     except Exception as e:
+#                         print(f"⚠️ Wakeword recognition issue: {e}")
 
-            except KeyboardInterrupt:
-                print("🧠 [WakeListener]: Stopping passive listener.")
-                break
-            except Exception as e:
-                print(f"⚠️ Loop error: {e}")
-                time.sleep(1)
+#             except KeyboardInterrupt:
+#                 print("🧠 [WakeListener]: Stopping passive listener.")
+#                 break
+#             except Exception as e:
+#                 print(f"⚠️ Loop error: {e}")
+#                 time.sleep(1)
                 
-def activate_listening_session():
-    """Start the main voice listening process without blocking the wake listener."""
-    print("🎤 [Audient]: Wakeword detected → switching to active listening mode!")
-
-    # Optional: play an activation chime
+def wakeword_background_listener():
+    """
+    Runs Porcupine v3.0.5 in a background thread.
+    This uses the access_key and the correct keyword logic.
+    """
+    porcupine = None
     try:
-        import simpleaudio as sa
-        wave_obj = sa.WaveObject.from_wave_file("assets/ding.wav")
-        wave_obj.play()
-    except Exception:
-        pass
+        # 1. Define the paths to the built-in keyword files
+        keyword_paths = [
+            pvporcupine.KEYWORD_PATHS['computer'],
+            pvporcupine.KEYWORD_PATHS['ok google'],
+            pvporcupine.KEYWORD_PATHS['hey siri']
+        ]
 
-    try:
-        with app.test_request_context("/listen-voice", method="POST", json={"trigger": "wake"}):
-            listen_voice()
+        # ✅ 1. Store the names yourself. This fixes the 'keyword_names' bug.
+        keywords = ['computer', 'ok google', 'hey siri']
+
+        # 2. Initialize using the create() factory method
+        porcupine = pvporcupine.create(
+            access_key=PICOVOICE_ACCESS_KEY,
+            keyword_paths=keyword_paths,
+            sensitivities=[0.5] * len(keyword_paths) # Add sensitivities
+        )
+        
+        # ✅ 2. Use your local 'keywords' list here
+        print(f"🎧 [WakeListener]: Porcupine (v3.0.5) loaded with keywords: {keywords}")
+
+        # Open an audio stream from the microphone
+        with sd.InputStream(
+            samplerate=porcupine.sample_rate,
+            channels=1,
+            dtype='int16',
+            blocksize=porcupine.frame_length
+        ) as stream:
+            
+            while True:
+                pause_listener.wait() 
+                
+                pcm, overflowed = stream.read(porcupine.frame_length)
+                if overflowed:
+                    print("⚠️ [WakeListener]: Audio buffer overflow", file=sys.stderr)
+                    
+                pcm = pcm.flatten()
+                
+                keyword_index = porcupine.process(pcm)
+                
+                if keyword_index >= 0:
+                    # ✅ 3. Use your local 'keywords' list here
+                    keyword = keywords[keyword_index] 
+                    print(f"🎉 Wake word detected: '{keyword}'")
+                    
+                    socketio.emit('wakeword_detected', {'text': keyword})
+                    
+                    time.sleep(2) 
+
+    except PorcupineError as e:  # <-- This will now work
+        print(f"❌ [WakeListener]: Porcupine error: {e}")
+        print("Please ensure your PICOVOICE_ACCESS_KEY is correct.")
     except Exception as e:
-        print(f"⚠️ [Audient]: Active listening failed: {e}")
+        print(f"❌ [WakeListener]: Unexpected error: {e}", file=sys.stderr)
+        traceback.print_exc()
+    finally:
+        if porcupine:
+            porcupine.delete()
+            print("🛑 [WakeListener]: Porcupine resources released.")
+
+# def activate_listening_session():
+#     """Start the main voice listening process without blocking the wake listener."""
+#     print("🎤 [Audient]: Wakeword detected → switching to active listening mode!")
+
+#     # Optional: play an activation chime
+#     try:
+#         import simpleaudio as sa
+#         wave_obj = sa.WaveObject.from_wave_file("assets/ding.wav")
+#         wave_obj.play()
+#     except Exception:
+#         pass
+
+#     try:
+#         with app.test_request_context("/listen-voice", method="POST", json={"trigger": "wake"}):
+#             listen_voice()
+#     except Exception as e:
+#         print(f"⚠️ [Audient]: Active listening failed: {e}")
 
 
 # ==============================================================
@@ -706,11 +813,20 @@ if __name__ == "__main__":
     print("🧠 [main.py]: Starting main server...")
     start_playwright_service()
 
+    calibrate_ambient_noise()
+
+    # wake_thread = threading.Thread(target=wakeword_background_listener, daemon=True)
+    # wake_thread.start()
+    # print("🎧 Passive wakeword listener thread started successfully!")
+
+    # app.run(port=5000, debug=True, use_reloader=False)
+
     wake_thread = threading.Thread(target=wakeword_background_listener, daemon=True)
     wake_thread.start()
     print("🎧 Passive wakeword listener thread started successfully!")
 
-    app.run(port=5000, debug=True, use_reloader=False)
+    # ✅ 5. USE SOCKETIO.RUN (requires eventlet)
+    socketio.run(app, port=5000, debug=True, use_reloader=False)
 
 
 # # === Run server ===

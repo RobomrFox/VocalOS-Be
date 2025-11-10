@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import Typewriter from "./components/Typewriter";
+import io from 'socket.io-client';
+
+const socket = io("http://127.0.0.1:5000");
 
 export default function App() {
   const [listening, setListening] = useState(false);
@@ -48,76 +51,166 @@ export default function App() {
   }, [listening]);
 
   // 🎤 Passive wake-word listener (poll backend every few seconds)
+  // useEffect(() => {
+  //   let interval;
+
+  //   async function checkWakeword() {
+  //     try {
+  //       const res = await fetch("http://127.0.0.1:5000/wakeword", { method: "POST" });
+  //       const data = await res.json();
+
+  //       if (data.wakeword_detected) {
+  //         console.log("👂 Wake-word detected:", data.text);
+
+  //         // 🌈 Show instant listening glow
+  //         setListening(true);
+  //         setMessages(prev => [
+  //           ...prev,
+  //           { sender: "user", text: `🎤 (${data.text})` },
+  //         ]);
+
+  //         // 🧠 Trigger actual voice recognition
+  //         const listenRes = await fetch("http://127.0.0.1:5000/listen-voice", {
+  //           method: "POST",
+  //           headers: { "Content-Type": "application/json" },
+  //           // ✅ 4. Updated wake-word call
+  //           body: JSON.stringify({
+  //             trigger: "wake",
+  //             verify_voice: voiceSignatureEnabled 
+  //           }),
+  //         });
+
+  //         const result = await listenRes.json();
+  //         if (listenRes.ok) {
+  //           setMessages(prev => [
+  //             ...prev,
+  //             { sender: "user", text: result.text },
+  //             { sender: "ai", text: result.reply },
+  //           ]);
+
+  //           // 🪄 Auto-dock if Gemini opened something
+  //           if (
+  //             result.action === "open_browser" ||
+  //             result.action === "open_app" ||
+  //             result.action === "compose_email"
+  //           ) {
+  //             window.electron?.ipcRenderer?.send("move-window-side");
+  //             setCompactMode(true);
+  //           }
+  //         } else {
+  //           // ✅ 4. Added 403 check to wake-word
+  //           let errorMsg = result.error || "Wake-word listening failed.";
+  //           if (listenRes.status === 403) {
+  //             errorMsg = "🔒 Wake-word ignored. Voice did not match profile.";
+  //           }
+  //           setMessages(prev => [
+  //             ...prev,
+  //             { sender: "ai", text: errorMsg },
+  //           ]);
+  //         }
+
+  //         setListening(false);
+  //       }
+  //     } catch (err) {
+  //       console.error("⚠️ Wake-word polling failed:", err);
+  //     }
+  //   }
+
+  //   // 🕒 check every 5 seconds
+  //   interval = setInterval(checkWakeword, 5000);
+  //   return () => clearInterval(interval);
+  // // ✅ 4. Added voiceSignatureEnabled as a dependency
+  // }, [voiceSignatureEnabled]); 
+
+
   useEffect(() => {
-    let interval;
+    
+    // Function to handle the full listening sequence
+    async function handleWakeWord(data) {
+      console.log("👂 Wake-word detected via WebSocket:", data.text);
 
-    async function checkWakeword() {
+      // 🌈 Show instant listening glow
+      setListening(true);
+      setMessages(prev => [
+        ...prev,
+        { sender: "user", text: `🎤 (${data.text})` },
+      ]);
+
       try {
-        const res = await fetch("http://127.0.0.1:5000/wakeword", { method: "POST" });
-        const data = await res.json();
+        // 🧠 Trigger actual voice recognition
+        const listenRes = await fetch("http://127.0.0.1:5000/listen-voice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            trigger: "wake",
+            verify_voice: voiceSignatureEnabled 
+          }),
+        });
+        
+        const result = await listenRes.json(); // Renamed to 'result' to match your old logic
 
-        if (data.wakeword_detected) {
-          console.log("👂 Wake-word detected:", data.text);
-
-          // 🌈 Show instant listening glow
-          setListening(true);
+        if (listenRes.ok) {
+          // Handle successful response from /listen-voice
           setMessages(prev => [
             ...prev,
-            { sender: "user", text: `🎤 (${data.text})` },
+            { sender: "user", text: result.text },
+            { sender: "ai", text: result.reply }, // Matched your sender "ai"
           ]);
 
-          // 🧠 Trigger actual voice recognition
-          const listenRes = await fetch("http://127.0.0.1:5000/listen-voice", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            // ✅ 4. Updated wake-word call
-            body: JSON.stringify({
-              trigger: "wake",
-              verify_voice: voiceSignatureEnabled 
-            }),
-          });
-
-          const result = await listenRes.json();
-          if (listenRes.ok) {
-            setMessages(prev => [
-              ...prev,
-              { sender: "user", text: result.text },
-              { sender: "ai", text: result.reply },
-            ]);
-
-            // 🪄 Auto-dock if Gemini opened something
-            if (
-              result.action === "open_browser" ||
-              result.action === "open_app" ||
-              result.action === "compose_email"
-            ) {
-              window.electron?.ipcRenderer?.send("move-window-side");
-              setCompactMode(true);
-            }
-          } else {
-            // ✅ 4. Added 403 check to wake-word
-            let errorMsg = result.error || "Wake-word listening failed.";
-            if (listenRes.status === 403) {
-              errorMsg = "🔒 Wake-word ignored. Voice did not match profile.";
-            }
-            setMessages(prev => [
-              ...prev,
-              { sender: "ai", text: errorMsg },
-            ]);
+          // 🪄 Auto-dock logic from your old code
+          if (
+            result.action === "open_browser" ||
+            result.action === "open_app" ||
+            result.action === "compose_email"
+          ) {
+            window.electron?.ipcRenderer?.send("move-window-side");
+            setCompactMode(true);
           }
 
-          setListening(false);
+        } else {
+          // Handle error response (e.g., "voice not recognized")
+          // Logic from your old code
+          let errorMsg = result.error || "Wake-word listening failed.";
+          if (listenRes.status === 403) {
+            errorMsg = "🔒 Wake-word ignored. Voice did not match profile.";
+          }
+          setMessages(prev => [
+            ...prev,
+            { sender: "ai", text: errorMsg }, // Matched your sender "ai"
+          ]);
         }
+      
       } catch (err) {
-        console.error("⚠️ Wake-word polling failed:", err);
+        console.error("Error during /listen-voice fetch:", err);
+        setMessages(prev => [
+          ...prev,
+          { sender: "ai", text: `⚠️ I couldn't hear anything or the backend failed.` },
+        ]);
+      } finally {
+        setListening(false); // Turn off glow
       }
     }
 
-    // 🕒 check every 5 seconds
-    interval = setInterval(checkWakeword, 5000);
-    return () => clearInterval(interval);
-  // ✅ 4. Added voiceSignatureEnabled as a dependency
-  }, [voiceSignatureEnabled]); 
+    // --- Socket.IO listeners ---
+    socket.on('connect', () => {
+      console.log('🔌 Connected to backend WebSocket.');
+    });
+
+    // This is the listener that replaces your polling
+    socket.on('wakeword_detected', handleWakeWord);
+
+    socket.on('disconnect', () => {
+      console.log('🔌 Disconnected from backend WebSocket.');
+    });
+
+    // Clean up the listener when the component unmounts
+    return () => {
+      socket.off('connect');
+      socket.off('wakeword_detected', handleWakeWord);
+      socket.off('disconnect');
+    };
+
+  }, [voiceSignatureEnabled, setCompactMode]);
 
 
   // 💬 Manual exchange for testing
@@ -338,57 +431,18 @@ export default function App() {
    🎧 Real-time Halo Glow Visualizer
 =================================== */
 function MockHaloGlow({ onIntensityChange }) {
-  const [intensity, setIntensity] = useState(0.5);
-  const analyserRef = useRef(null);
-  const dataArrayRef = useRef(null);
-  const animationRef = useRef(null);
-
   useEffect(() => {
-    let audioContext;
-    let source;
+    // Create a "breathing" pulse effect
+    const interval = setInterval(() => {
+      // Calculate a pulsing value between 0.3 and 1.0
+      const pulse = (Math.sin(Date.now() / 400) + 1) / 2; // Oscillates between 0 and 1
+      const newIntensity = 0.3 + pulse * 0.7; // Scale to 0.3 - 1.0
+      onIntensityChange(newIntensity);
+    }, 50); // Update 20 times per second
 
-    async function setupMic() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        source = audioContext.createMediaStreamSource(stream);
-
-        const analyser = audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        const bufferLength = analyser.frequencyBinCount;
-        const dataArray = new Uint8Array(bufferLength);
-
-        analyserRef.current = analyser;
-        dataArrayRef.current = dataArray;
-        source.connect(analyser);
-
-        const animate = () => {
-          if (!analyserRef.current) return;
-          analyserRef.current.getByteTimeDomainData(dataArrayRef.current);
-
-          let sum = 0;
-          for (let i = 0; i < dataArrayRef.current.length; i++) {
-            const val = dataArrayRef.current[i] - 128;
-            sum += val * val;
-          }
-          const rms = Math.sqrt(sum / dataArrayRef.current.length);
-          const newIntensity = Math.min(1, rms / 30);
-          setIntensity(newIntensity);
-          onIntensityChange(newIntensity); // 🔥 Pass intensity to parent glow
-          animationRef.current = requestAnimationFrame(animate);
-        };
-        animate();
-      } catch (err) {
-        console.error("🎤 Mic setup failed:", err);
-      }
-    }
-
-    setupMic();
-    return () => {
-      cancelAnimationFrame(animationRef.current);
-      if (audioContext) audioContext.close();
-    };
+    // Clear interval on cleanup
+    return () => clearInterval(interval);
   }, [onIntensityChange]);
 
-  return null; // No visible overlay needed — controls .glass-card glow
+  return null; // This component is purely visual via the parent's style
 }

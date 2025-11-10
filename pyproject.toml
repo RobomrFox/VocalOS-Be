@@ -21,7 +21,6 @@ dependencies = [
     "pyaudio>=0.2.14",
     "pyautogui>=0.9.54",
     "pydub>=0.25.1",
-    "realtimestt>=0.1.7",
     "requests>=2.32.5",
     "resemblyzer>=0.1.4",
     "rich>=14.2.0",
