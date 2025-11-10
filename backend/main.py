@@ -1,6 +1,6 @@
 # main.py
 # This is the ONLY file you need to run.
-
+import io
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import speech_recognition as sr
@@ -18,20 +18,32 @@ import requests
 import atexit
 import sys
 from dotenv import load_dotenv
-from prompt import get_system_prompt  # <-- NEW IMPORT
+from prompt import get_system_prompt
+from real_time_stt import AudioToTextRecorder
+from stt import VoiceSignature
+import numpy as np
+import wave
+# We no longer need threading
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # --- Gemini API setup ---
-script_dir = os.path.dirname(os.path.realpath(__file__))
-dotenv_path = os.path.join(script_dir, ".env")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+VOICE_PROFILE_DIR = os.path.join(SCRIPT_DIR, "voice_profiles")
 
-if os.path.exists(dotenv_path):
-    print(f"🧠 [main.py]: Loading environment variables from {dotenv_path}")
-    load_dotenv(dotenv_path)
+script_dir = os.path.dirname(os.path.realpath(__file__))
+
+stt = AudioToTextRecorder()
+vs = VoiceSignature(profile_dir=VOICE_PROFILE_DIR)  # ✅ Pass the absolute path
+username = "default_user"
+enrolled_embedding = vs.load_embedding(username)
+
+if os.path.exists(SCRIPT_DIR):
+    print(f"🧠 [main.py]: Loading environment variables from ")
+    load_dotenv()
 else:
-    print(f"🧠 [main.py]: ⚠️ WARNING: .env file not found at {dotenv_path}")
+    print(f"🧠 [main.py]: ⚠️ WARNING: .env file not found at")
 
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -44,8 +56,7 @@ recognizer = sr.Recognizer()
 
 # --- Professor Database ---
 PROFESSOR_DB = {
-    "faiz": "faiz4@ualberta.ca"
-    # You can add more here
+    "jack": "faiz4@ualberta.ca"
 }
 
 # --- Email Draft Session ---
@@ -55,6 +66,21 @@ email_draft_session = {
     "subject": "",
     "body_content": ""
 }
+
+def wav_to_numpy(wav_bytes):
+    with io.BytesIO(wav_bytes) as wav_io:
+        with wave.open(wav_io) as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+            sample_width = wav_file.getsampwidth()
+            # Convert frames to numpy array based on sample width
+            if sample_width == 2:
+                dtype = np.int16
+            elif sample_width == 4:
+                dtype = np.int32
+            else:
+                dtype = np.uint8  # fallback
+            audio_np = np.frombuffer(frames, dtype=dtype)
+    return audio_np.astype(np.float32) / np.iinfo(dtype).max  # normalize to flo
 
 # --- Subprocess Management ---
 PLAYWRIGHT_SERVICE_URL = "http://127.0.0.1:5001/execute"
@@ -108,8 +134,8 @@ def shutdown_services():
 atexit.register(shutdown_services)
 
 # --- Helper Functions ---
+# ... (open_browser, open_local_app, write_to_app are unchanged) ...
 def open_browser(target):
-    # ... (This function is unchanged) ...
     try:
         print(f"🌐 Opening NEW tab: {target}")
         webbrowser.open(target)
@@ -118,7 +144,6 @@ def open_browser(target):
         return f"❌ Failed to open browser: {e}"
 
 def open_local_app(app_name):
-    # ... (This function is unchanged) ...
     try:
         system = platform.system().lower()
         print(f"🖥️ Launching app: {app_name}")
@@ -156,7 +181,6 @@ def open_local_app(app_name):
 
 
 def write_to_app(app_name, content):
-    # ... (This function is unchanged) ...
     try:
         system = platform.system().lower()
         target = app_name.lower()
@@ -198,8 +222,10 @@ def write_to_app(app_name, content):
         print(f"❌ Failed to write: {e}")
         return f"Couldn’t write into {app_name}: {e}"
     
+#
+# --- THIS FUNCTION IS UNCHANGED ---
+#
 def compose_email_and_refresh():
-    # ... (This function is unchanged) ...
     global email_draft_session
     try:
         import urllib.parse
@@ -213,10 +239,12 @@ def compose_email_and_refresh():
         subject_encoded = urllib.parse.quote(email_draft_session['subject'] or "")
         body_encoded = urllib.parse.quote(final_body or "")
         
+        # --- THIS IS THE FIX ---
         gmail_url = (
             f"https://mail.google.com/mail/?view=cm&fs=1"
             f"&to={to_encoded}&su={subject_encoded}&body={body_encoded}"
         )
+        # --- END OF FIX ---
         
         print(f"📧 Refreshing Gmail compose for: {email_draft_session['to']}")
         
@@ -232,11 +260,8 @@ def compose_email_and_refresh():
         return f"❌ Failed to open Gmail compose — {e}"
 
 
-# --- Ask Gemini for actions (CLEANED UP) ---
 def ask_gemini_for_action(user_text):
-    """Ask Gemini to interpret the user's intent and return a safe structured action."""
-    
-    # Get tab context from the service
+    # ... (This function is unchanged) ...
     tab_context_raw = call_playwright_service({"action": "get_tab_context"})
     tab_context_str = "Tab context unavailable."
     
@@ -255,16 +280,12 @@ def ask_gemini_for_action(user_text):
     
     open_windows = [w.title for w in gw.getAllWindows() if w.title]
     
-    # Build the full context string
     context = (
         f"Currently open windows: {open_windows[:5]}\n"
         f"Controlled Browser Context: {tab_context_str}"
     )
 
-    # --- THIS IS THE CHANGE ---
-    # Get the prompt from the new prompt.py file
     system_prompt = get_system_prompt(context)
-    # --- END OF CHANGE ---
 
     print("🧠 [main.py]: Asking Gemini to interpret...")
     response = model.generate_content(f"{system_prompt}\n\nUser: {user_text}")
@@ -300,7 +321,6 @@ def ask_gemini_for_action(user_text):
         match = re.search(r"\{[\s\S]*\}", text)
         if match:
             try:
-                # Re-run the parse and post-processing logic
                 json_data = json.loads(match.group(0))
                 if json_data.get("action") == "playwright_switch_to_tab":
                     index_str = str(json_data.get("index", ""))
@@ -314,21 +334,161 @@ def ask_gemini_for_action(user_text):
                 print(f"⚠️ [main.py]: Fallback parse failed: {e2}")
         return {"action": "none", "reply": text}
 
+#
+# --- THIS IS THE NEW, FASTER /listen-voice FUNCTION ---
+## Make sure you have this import if it's not already present at the top of your file
 
-# --- Flask Routes (Unchanged) ---
+# (And assuming numpy as np, speech_recognition as sr, etc. are already imported)
+# (And assuming ask_gemini_for_action and other helper functions are defined)
+
+#
+# --- THIS IS THE NEW, CORRECTED /listen-voice FUNCTION ---
+#
 @app.route("/listen-voice", methods=["POST"])
 def listen_voice():
-    # ... (This function is unchanged) ...
-    global email_draft_session
+    """
+    This route does Speech-to-Text with OPTIONAL voice verification.
+    1. Optionally verifies speaker identity
+    2. Converts speech to text
+    3. Passes text to Gemini to get an action/reply
+    4. EXECUTES the action
+    5. Returns the final text, reply, and action
+    """
+    global email_draft_session  # <-- ✅ ADDED THIS
     try:
-        with sr.Microphone() as source:
-            print("🎧 Listening... please speak clearly.")
-            recognizer.adjust_for_ambient_noise(source, duration=1)
-            audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
-        print("🧠 [main.py]: Processing your voice...")
+        # Check if voice verification is requested
+        verify_voice = False
+        if request.is_json:
+            verify_voice = request.get_json().get("verify_voice", False)
+        else:
+            verify_voice = request.form.get("verify_voice", "false").lower() == "true"
+
+        global enrolled_embedding
+
+        # --- (Voice Enrollment & Verification logic is unchanged) ---
+        if verify_voice:
+            if enrolled_embedding is None:
+                print("No enrolled voice found. Recording and enrolling now...")
+                with sr.Microphone() as source:
+                    recognizer.adjust_for_ambient_noise(source, duration=1)
+                    print("Recording 10s for voice enrollment - SPEAK CONTINUOUSLY...")
+                    audio = recognizer.listen(source, timeout=15, phrase_time_limit=10)
+                
+                try:
+                    wav = audio.get_wav_data()
+                    audio_np = wav_to_numpy(wav)
+                    enrolled_embedding = vs.get_embedding(audio_np)
+                    
+                    if len(enrolled_embedding) == 0 or np.all(enrolled_embedding == 0):
+                        print("❌ ERROR: Invalid embedding created!")
+                        return jsonify({
+                            "error": "Enrollment failed - please speak clearly",
+                            "code": "enrollment_invalid"
+                        }), 500
+                    
+                    vs.save_embedding("default_user", enrolled_embedding)
+                    print(f"✅ Enrollment completed! Embedding norm: {np.linalg.norm(enrolled_embedding):.3f}")
+                except Exception as e:
+                    print("Enrollment failed:", e)
+                    return jsonify({
+                        "error": "Voice enrollment failed.",
+                        "details": str(e),
+                        "code": "enrollment_error"
+                    }), 500
+
+            # Record and verify
+            print("🎧 Recording for verification and transcription...")
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                recognizer.energy_threshold = 300
+                recognizer.pause_threshold = 0.7
+                audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
+
+            # Verify the audio
+            wav = audio.get_wav_data()
+            audio_np = wav_to_numpy(wav)
+            verified = vs.verify(enrolled_embedding, audio_np, threshold=0.80)
+            
+            if not verified:
+                return jsonify({
+                    "error": "Voice not recognized",
+                    "code": "voice_rejected"
+                }), 403
+            print("✅ Voice verified!")
+        
+        else:
+            # Standard recording without verification
+            print("Listening... please speak clearly.")
+            with sr.Microphone() as source:
+                recognizer.adjust_for_ambient_noise(source, duration=1)
+                audio = recognizer.listen(source, timeout=6, phrase_time_limit=10)
+
+        # --- (Transcription logic is unchanged) ---
+        print("[main.py] Processing your voice...")
         try:
             user_text = recognizer.recognize_google(audio)
-            print(f"🗣️ You said: {user_text}")
+            print(f"You said: {user_text}")
+
+            # ----- START: ✅ FULL Gemini Action & Execution Logic -----
+            
+            # 1. Ask AI
+            gemini_decision = ask_gemini_for_action(user_text)
+            action = str(gemini_decision.get("action", "none")).lower()
+            print(f"🧩 [main.py]: Parsed action: {action}")
+
+            # 2. Perform Action
+            if action == "open_browser":
+                reply_text = open_browser(gemini_decision.get("target"))
+            elif action == "open_app":
+                reply_text = open_local_app(gemini_decision.get("target"))
+            elif action == "write_text":
+                reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
+            
+            elif action == "email_start_professor":
+                name = gemini_decision.get("name").lower()
+                email = PROFESSOR_DB.get(name)
+                if email:
+                    email_draft_session = {"to": email, "to_name": name.title(), "subject": "", "body_content": ""}
+                    reply_text = compose_email_and_refresh()
+                else:
+                    reply_text = f"I don't have a professor named '{name}' in my database."
+            
+            elif action == "email_start_generic":
+                email = gemini_decision.get("to")
+                email_draft_session = {"to": email, "to_name": email.split('@')[0], "subject": "", "body_content": ""}
+                reply_text = compose_email_and_refresh()
+
+            elif action == "email_set_title":
+                email_draft_session["subject"] = gemini_decision.get("title")
+                reply_text = compose_email_and_refresh()
+            
+            elif action == "email_set_content":
+                email_draft_session["body_content"] = gemini_decision.get("content")
+                reply_text = compose_email_and_refresh()
+
+            elif action == "email_clear_title":
+                email_draft_session["subject"] = ""
+                reply_text = compose_email_and_refresh()
+            
+            elif action == "email_clear_content":
+                email_draft_session["body_content"] = ""
+                reply_text = compose_email_and_refresh()
+            
+            elif action.startswith("playwright_"):
+                payload = gemini_decision.copy()
+                payload["action"] = action.replace("playwright_", "")
+                reply_text = call_playwright_service(payload)
+
+            elif action == "none":
+                reply_text = gemini_decision.get("reply")
+            else:
+                reply_text = gemini_decision.get("reply") or "I'm here and listening."
+
+            # 3. Return Final Reply
+            print(f"✅ [main.py]: Reply: {reply_text}")
+            return jsonify({"text": user_text, "reply": reply_text, "action": action})
+            # ----- END: ✅ FULL Gemini Action & Execution Logic -----
+
         except sr.UnknownValueError:
             msg = "I couldn't understand what you said. Please try again."
             return jsonify({"error": msg, "code": "stt_unknown", "can_retry": True}), 400
@@ -339,67 +499,17 @@ def listen_voice():
             msg = f"Speech recognition service failed: {e}"
             return jsonify({"error": msg, "code": "stt_api_error", "can_retry": False}), 502
 
-        gemini_decision = ask_gemini_for_action(user_text)
-        action = str(gemini_decision.get("action", "none")).lower()
-        print(f"🧩 [main.py]: Parsed action: {action}")
-
-        if action == "open_browser":
-            reply_text = open_browser(gemini_decision.get("target"))
-        elif action == "open_app":
-            reply_text = open_local_app(gemini_decision.get("target"))
-        elif action == "write_text":
-            reply_text = write_to_app(gemini_decision.get("target"), gemini_decision.get("content"))
-        
-        elif action == "email_start_professor":
-            name = gemini_decision.get("name").lower()
-            email = PROFESSOR_DB.get(name)
-            if email:
-                email_draft_session = {"to": email, "to_name": name.title(), "subject": "", "body_content": ""}
-                reply_text = compose_email_and_refresh()
-            else:
-                reply_text = f"I don't have a professor named '{name}' in my database."
-        
-        elif action == "email_start_generic":
-            email = gemini_decision.get("to")
-            email_draft_session = {"to": email, "to_name": email.split('@')[0], "subject": "", "body_content": ""}
-            reply_text = compose_email_and_refresh()
-
-        elif action == "email_set_title":
-            email_draft_session["subject"] = gemini_decision.get("title")
-            reply_text = compose_email_and_refresh()
-        
-        elif action == "email_set_content":
-            email_draft_session["body_content"] = gemini_decision.get("content")
-            reply_text = compose_email_and_refresh()
-
-        elif action == "email_clear_title":
-            email_draft_session["subject"] = ""
-            reply_text = compose_email_and_refresh()
-        
-        elif action == "email_clear_content":
-            email_draft_session["body_content"] = ""
-            reply_text = compose_email_and_refresh()
-        
-        elif action.startswith("playwright_"):
-            payload = gemini_decision.copy()
-            payload["action"] = action.replace("playwright_", "")
-            reply_text = call_playwright_service(payload)
-
-        elif action == "none":
-            reply_text = gemini_decision.get("reply")
-        else:
-            reply_text = f"I understood the action '{action}' but wasn't sure what to do."
-        
-        print(f"✅ [main.py]: Reply: {reply_text}")
-        return jsonify({"text": user_text, "reply": reply_text})
-
     except Exception as e:
-        print("❌ [main.py]: Full backend error:\n", traceback.format_exc())
+        print("[main.py] Full backend error:\n", traceback.format_exc())
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
-
+#
+# --- /listen (text) route is UNCHANGED and now handles all actions ---
+#
 @app.route("/listen", methods=["POST"])
 def listen_text():
-    # ... (This function is unchanged) ...
+    """
+    Receives text, interprets it, and performs an action.
+    """
     global email_draft_session
     
     data = request.get_json()
@@ -408,9 +518,12 @@ def listen_text():
         return jsonify({"reply": "⚠️ I didn’t catch that. Could you repeat?"})
     print(f"💬 [main.py]: Text command: {user_text}")
 
+    # 1. Ask AI
     gemini_decision = ask_gemini_for_action(user_text)
     action = str(gemini_decision.get("action", "none")).lower()
+    print(f"🧩 [main.py]: Parsed action: {action}")
 
+    # 2. Perform Action
     if action == "open_browser":
         reply_text = open_browser(gemini_decision.get("target"))
     elif action == "open_app":
@@ -458,6 +571,8 @@ def listen_text():
     else:
         reply_text = gemini_decision.get("reply") or "I'm here and listening."
 
+    # 3. Return Final Reply
+    print(f"✅ [main.py]: Reply: {reply_text}")
     return jsonify({"reply": reply_text})
 
 # === Run server ===
@@ -466,9 +581,7 @@ if __name__ == "__main__":
     print("🧠 [main.py]: Starting main server...")
     start_playwright_service()
     
-    # --- THIS IS THE FIX ---
-    # The bad print statement is removed
-    print("🧠 [main.py]: ✅ Main server running on (http://127.0.0.1:5000)")
-    # --- END OF FIX ---
+    print("🧠 [main.py]: ✅ Main server running on ([http://127.0.0.1:5000](http://127.0.0.1:5000))")
     
+    # Back to the original, simple config. No threading.
     app.run(port=5000, debug=True, use_reloader=False)

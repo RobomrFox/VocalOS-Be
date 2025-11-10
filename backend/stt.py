@@ -45,14 +45,32 @@ class VoiceSignature:
         print(f"Enrollment completed for user '{username}'.")
         return embedding
 
-    def verify(self, embedding, duration=3, threshold=0.65):
-        print(f"Verifying speaker with {duration}s audio...")
-        audio = self.record_audio(duration)
-        test_embedding = self.get_embedding(audio)
-        similarity = np.dot(embedding, test_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(test_embedding))
-        print(f"Speaker similarity: {similarity:.3f}")
-        return similarity > threshold
+    def verify(self, enrolled_embedding, audio_np_to_check, threshold=0.65):
+            """
+            Verifies a speaker by comparing their enrolled_embedding
+            against a newly provided audio numpy array (audio_np_to_check).
+            """
+            print("Verifying speaker...")
 
+            try:
+                # 1. Get embedding from the audio that was passed in
+                test_embedding = self.get_embedding(audio_np_to_check)
+                
+                if np.all(test_embedding == 0) or test_embedding is None:
+                    print("Failed to create a valid embedding for the test audio.")
+                    return False
+
+                # 2. Calculate cosine similarity
+                similarity = np.dot(enrolled_embedding, test_embedding) / (np.linalg.norm(enrolled_embedding) * np.linalg.norm(test_embedding))
+                
+                print(f"Speaker similarity: {similarity:.3f} (Threshold: {threshold})")
+                
+                # 3. Return True/False based on threshold
+                return similarity > threshold
+
+            except Exception as e:
+                print(f"Error during verification: {e}")
+                return False
 
 if __name__ == "__main__":
     vs = VoiceSignature()
