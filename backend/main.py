@@ -17,12 +17,18 @@ import traceback
 import requests
 import atexit
 import sys
+import re
 from dotenv import load_dotenv
 from prompt import get_system_prompt
 from real_time_stt import AudioToTextRecorder
 from stt import VoiceSignature
 import numpy as np
 import wave
+import threading
+
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stderr.reconfigure(encoding='utf-8')
+
 # We no longer need threading
 
 app = Flask(__name__)
@@ -136,12 +142,22 @@ atexit.register(shutdown_services)
 # --- Helper Functions ---
 # ... (open_browser, open_local_app, write_to_app are unchanged) ...
 def open_browser(target):
+    """
+    Open a URL in the controlled Playwright browser instance.
+    If no Playwright session exists, it will auto-start.
+    """
     try:
-        print(f"🌐 Opening NEW tab: {target}")
-        webbrowser.open(target)
-        return f"Opening {target} in a new tab."
+        if not target.startswith("http"):
+            target = "https://" + target
+        print(f"🌐 [Playwright] Opening tab: {target}")
+        result = call_playwright_service({
+            "action": "goto",     # instruct Playwright to open in existing browser
+            "target": target
+        })
+        return f"📂 Browser controlled by Playwright — opened {target}. {result}"
     except Exception as e:
-        return f"❌ Failed to open browser: {e}"
+        print(f"❌ [main.py]: Failed to open browser tab via Playwright: {e}")
+        return f"❌ Failed to open tab in controlled browser: {e}"
 
 def open_local_app(app_name):
     try:
@@ -400,7 +416,6 @@ def listen_voice():
             print("🎧 Recording for verification and transcription...")
             with sr.Microphone() as source:
                 recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                recognizer.energy_threshold = 300
                 recognizer.pause_threshold = 0.7
                 audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
 
@@ -438,7 +453,9 @@ def listen_voice():
 
             # 2. Perform Action
             if action == "open_browser":
-                reply_text = open_browser(gemini_decision.get("target"))
+                browser_result = open_browser(gemini_decision.get("target"))
+                reply_text = browser_result["reply"]
+                action = browser_result[action]
             elif action == "open_app":
                 reply_text = open_local_app(gemini_decision.get("target"))
             elif action == "write_text":
@@ -575,13 +592,134 @@ def listen_text():
     print(f"✅ [main.py]: Reply: {reply_text}")
     return jsonify({"reply": reply_text})
 
-# === Run server ===
+# ==============================================================
+# 💤 Wakeword Detection + Passive Listener
+# ==============================================================
+
+@app.route("/wakeword", methods=["POST"])
+def wakeword():
+    try:
+        with sr.Microphone() as source:
+            print("🎤 Listening for possible wake phrase...")
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = recognizer.listen(source, timeout=3, phrase_time_limit=4)
+
+        text = recognizer.recognize_google(audio).lower()
+        print(f"🗣️ Heard → {text}")
+
+        prompt = f"""
+        You are Audient, a voice assistant.
+        Determine if the user is trying to wake you up.
+        If it sounds like 'hey computer', 'hello', 'hi computer', etc., return:
+        {{ "wake": true, "reason": "greeting detected" }}
+        Otherwise return:
+        {{ "wake": false, "reason": "not a wake phrase" }}
+        User said: "{text}"
+        """
+        result = model.generate_content(prompt)
+        reply = result.text.strip()
+        match = re.search(r"\{[\s\S]*\}", reply)
+        data = json.loads(match.group(0)) if match else {"wake": False, "reason": "parse error"}
+
+        print(f"🤖 Gemini decision → {data}")
+        return jsonify({
+            "wakeword_detected": data.get("wake", False),
+            "text": text,
+            "reason": data.get("reason", "")
+        })
+    except sr.UnknownValueError:
+        return jsonify({"wakeword_detected": False, "error": "no speech detected"})
+    except Exception as e:
+        print("❌ Wakeword detection failed:", e)
+        return jsonify({"wakeword_detected": False, "error": str(e)})
+
+def wakeword_background_listener():
+    print("🎧 [WakeListener]: Starting passive wake listener (Siri-style)...")
+    recognizer = sr.Recognizer()
+    sample_rate = 16000
+    block_duration = 2  # seconds
+    q = queue.Queue()
+
+    # Callback collects audio chunks
+    def callback(indata, frames, time_info, status):
+        if status:
+            print(f"🎙️ Audio input status: {status}")
+        q.put(indata.copy())
+
+    # Continuous input stream
+    with sd.InputStream(samplerate=sample_rate, channels=1, callback=callback):
+        buffer = np.zeros(int(sample_rate * block_duration))
+        last_detection_time = 0
+
+        while True:
+            try:
+                data = q.get()
+                buffer = np.concatenate((buffer[len(data):], data.flatten()))
+                audio = sr.AudioData(buffer.tobytes(), sample_rate, 2)
+
+                # Attempt recognition only every few seconds
+                if time.time() - last_detection_time > 2:
+                    try:
+                        text = recognizer.recognize_google(audio).lower().strip()
+                        if text:
+                            print(f"🗣️ Heard → {text}")
+                            if re.search(r"\b(hey|hi|ok)\s+(audient|assistant|computer)\b", text):
+                                print("🎉 Wake word detected! Activating...")
+                                threading.Thread(target=activate_listening_session, daemon=True).start()
+                                last_detection_time = time.time()
+                    except sr.UnknownValueError:
+                        pass
+                    except Exception as e:
+                        print(f"⚠️ Wakeword recognition issue: {e}")
+
+            except KeyboardInterrupt:
+                print("🧠 [WakeListener]: Stopping passive listener.")
+                break
+            except Exception as e:
+                print(f"⚠️ Loop error: {e}")
+                time.sleep(1)
+                
+def activate_listening_session():
+    """Start the main voice listening process without blocking the wake listener."""
+    print("🎤 [Audient]: Wakeword detected → switching to active listening mode!")
+
+    # Optional: play an activation chime
+    try:
+        import simpleaudio as sa
+        wave_obj = sa.WaveObject.from_wave_file("assets/ding.wav")
+        wave_obj.play()
+    except Exception:
+        pass
+
+    try:
+        with app.test_request_context("/listen-voice", method="POST", json={"trigger": "wake"}):
+            listen_voice()
+    except Exception as e:
+        print(f"⚠️ [Audient]: Active listening failed: {e}")
+
+
+# ==============================================================
+# 🚀 Run Server
+# ==============================================================
+
 if __name__ == "__main__":
-    
     print("🧠 [main.py]: Starting main server...")
     start_playwright_service()
-    
-    print("🧠 [main.py]: ✅ Main server running on ([http://127.0.0.1:5000](http://127.0.0.1:5000))")
-    
-    # Back to the original, simple config. No threading.
+
+    wake_thread = threading.Thread(target=wakeword_background_listener, daemon=True)
+    wake_thread.start()
+    print("🎧 Passive wakeword listener thread started successfully!")
+
     app.run(port=5000, debug=True, use_reloader=False)
+
+
+# # === Run server ===
+# if __name__ == "__main__":
+    
+#     print("🧠 [main.py]: Starting main server...")
+#     start_playwright_service()
+    
+#     print("🧠 [main.py]: ✅ Main server running on ([http://127.0.0.1:5000](http://127.0.0.1:5000))")
+    
+#     # Back to the original, simple config. No threading.
+#     app.run(port=5000, debug=True, use_reloader=False)
