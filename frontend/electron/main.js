@@ -144,30 +144,52 @@ ipcMain.on("move-window-side", () => {
 });
 
 /**
- * 🪞 Dock to LEFT side (Your requested layout)
+ * 🪞 Dock to LEFT side (focus-safe + screen offset aware)
  */
 ipcMain.on("move-window-left", () => {
   if (!win) return;
 
   const display = screen.getPrimaryDisplay();
-  const { width, height } = display.workAreaSize;
+  const { bounds } = display;
+  const { width, height, x: screenX, y: screenY } = bounds;
 
-  let targetWidth = Math.floor(width * 0.3);
-  let targetHeight = Math.floor(height * 0.85);
-  targetWidth = Math.max(360, Math.min(targetWidth, width - 40));
-  targetHeight = Math.max(400, Math.min(targetHeight, height - 40));
-
+  // ⚙️ Window target size (adaptive but stable)
+  const targetWidth = Math.floor(width * 0.32);
+  const targetHeight = Math.floor(height * 0.85);
   const margin = 10;
-  const targetX = margin;
-  const targetY = Math.floor(height * 0.07);
 
-  console.log("🪟 Docking VocalAI safely to LEFT side...");
-  smoothMoveWindow({ x: targetX, y: targetY, width: targetWidth, height: targetHeight }, 500);
+  // 🧭 Target position — left side, small top offset
+  const targetX = screenX + margin;
+  const targetY = screenY + Math.floor(height * 0.07);
 
-  win.focus();
-  win.webContents.send("window-position", "left");
-  console.log("✅ Docked on left with glowing border!");
+  console.log("🪞 Docking Audient LEFT:", { targetX, targetY, targetWidth, targetHeight });
+
+  // ✅ Delay slightly to allow Chrome to finish opening
+  setTimeout(() => {
+    try {
+      // Make sure window is visible and on top
+      win.show();
+      win.setAlwaysOnTop(true, "screen-saver");
+      win.focus();
+
+      // ✅ Smooth slide to left
+      smoothMoveWindow(
+        { x: targetX, y: targetY, width: targetWidth, height: targetHeight },
+        600
+      );
+
+      // ✅ Ensure it stays on top and recognized as docked
+      setTimeout(() => {
+        win.setAlwaysOnTop(true, "screen-saver");
+        win.webContents.send("window-position", "left");
+        console.log("✅ Audient docked LEFT successfully!");
+      }, 800);
+    } catch (err) {
+      console.error("❌ Docking error (LEFT):", err);
+    }
+  }, 1200); // 1.2s delay after Playwright opens
 });
+
 
 /**
  * 🏠 Return to Center
